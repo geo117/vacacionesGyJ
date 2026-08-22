@@ -1,0 +1,143 @@
+-- =========================================================
+-- CREAR BASE DE DATOS
+-- =========================================================
+CREATE DATABASE vacacionesgyj;
+GO
+
+USE vacacionesgyj;
+GO
+
+-- =========================================================
+-- TABLA: centros_operacion
+-- =========================================================
+CREATE TABLE centros_operacion (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    nombre VARCHAR(150) NOT NULL,
+    estado BIT NOT NULL DEFAULT 1,
+    fecha_registro DATETIME NOT NULL DEFAULT GETDATE(),
+    fecha_update DATETIME NULL
+);
+GO
+
+-- =========================================================
+-- TABLA: empleados
+-- =========================================================
+CREATE TABLE empleados (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+
+    nombre_empleado VARCHAR(200) NOT NULL,
+
+    id_centro_operacion INT NOT NULL,
+
+    identificacion INT NOT NULL,
+
+    fecha_registro DATETIME NOT NULL DEFAULT GETDATE(),
+
+    fecha_update DATETIME NULL,
+
+    CONSTRAINT FK_empleados_centros_operacion
+        FOREIGN KEY (id_centro_operacion)
+        REFERENCES centros_operacion(id)
+);
+GO
+
+-- =========================================================
+-- TABLA: estados_vacaciones
+-- =========================================================
+CREATE TABLE estados_vacaciones (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+
+    nombre_estado VARCHAR(50) NOT NULL UNIQUE,
+
+    descripcion VARCHAR(255) NULL
+);
+GO
+
+-- =========================================================
+-- TABLA: asignacion_vacaciones
+-- =========================================================
+CREATE TABLE asignacion_vacaciones (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+
+    id_empleado INT NOT NULL,
+
+    -- PERIODO 1
+    fecha_inicio_periodo_1 DATE NULL,
+    fecha_fin_periodo_1 DATE NULL,
+    total_dias_periodo_1 INT NULL,
+
+    -- PERIODO 2
+    fecha_inicio_periodo_2 DATE NULL,
+    fecha_fin_periodo_2 DATE NULL,
+    total_dias_periodo_2 INT NULL,
+
+    -- PERIODO 3
+    fecha_inicio_periodo_3 DATE NULL,
+    fecha_fin_periodo_3 DATE NULL,
+    total_dias_periodo_3 INT NULL,
+
+    fecha_regreso DATE NULL,
+
+    fecha_dia_familia DATE NULL,
+
+    total_dias_asignados INT NOT NULL DEFAULT 0,
+
+    saldo_final INT NOT NULL DEFAULT 0,
+
+    id_estado_fechas INT NOT NULL,
+
+    motivo_rechazo VARCHAR(500) NULL,
+
+    observaciones VARCHAR(MAX) NULL,
+
+    fecha_registro DATETIME NOT NULL DEFAULT GETDATE(),
+
+    fecha_update DATETIME NULL,
+
+    CONSTRAINT FK_asignacion_vacaciones_empleado
+        FOREIGN KEY (id_empleado)
+        REFERENCES empleados(id),
+
+    CONSTRAINT FK_asignacion_vacaciones_estado
+        FOREIGN KEY (id_estado_fechas)
+        REFERENCES estados_vacaciones(id)
+);
+GO
+
+-- =========================================================
+-- TABLA: notificaciones
+-- =========================================================
+CREATE TABLE notificaciones (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+
+    id_empleado INT NOT NULL,
+
+    titulo VARCHAR(200) NOT NULL,
+
+    mensaje VARCHAR(MAX) NOT NULL,
+
+    leida BIT NOT NULL DEFAULT 0,
+
+    fecha_notificacion DATETIME NOT NULL DEFAULT GETDATE(),
+
+    CONSTRAINT FK_notificaciones_empleado
+        FOREIGN KEY (id_empleado)
+        REFERENCES empleados(id)
+);
+GO
+
+-- =========================================================
+-- ÍNDICES
+-- =========================================================
+
+CREATE INDEX IX_empleados_identificacion
+ON empleados(identificacion);
+GO
+
+CREATE INDEX IX_asignacion_vacaciones_empleado
+ON asignacion_vacaciones(id_empleado);
+GO
+
+CREATE INDEX IX_asignacion_vacaciones_estado
+ON asignacion_vacaciones(id_estado_fechas);
+GO
