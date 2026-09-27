@@ -1,0 +1,40 @@
+-- =========================================================
+-- TABLA: inf_asignacion
+-- =========================================================
+Columna             TipoDato    LongitudMaxima  PermiteNulos
+id	                int	        NULL	        NO
+identificacion	    int	        NULL	        YES
+empleado	        varchar	    200	            NO
+cargo	            varchar	    200	            NO
+desc_unes	        varchar	    200	            NO
+unes	            varchar	    200	            NO
+correo	            varchar	    200	            NO
+estado_asignacion	varchar	    200	            NO
+dias_a_corte	    float	    NULL	        NO
+observaciones	    varchar	    200	            NO
+motivo_rechazo      VARCHAR     (500)           NULL
+periodo1_fecha1	    datetime	NULL	        YES
+periodo1_fecha2	    datetime	NULL	        YES
+periodo1_dias1	    int	        NULL	        YES
+periodo2_fecha1	    datetime	NULL	        YES
+periodo2_fecha2	    datetime	NULL	        YES
+periodo2_dias2	    int	        NULL	        YES
+periodo3_fecha1	    datetime	NULL	        YES
+periodo3_fecha2	    datetime	NULL	        YES
+periodo3_dias3	    int	        NULL	        YES
+fecha_regreso	    datetime	NULL	        NO
+total_dias_empleado	float	    NULL	        YES
+fecha_registro	    datetime	NULL	        NO
+fecha_update	    datetime	NULL	        YES
+
+
+-- =========================================================
+-- TABLA: notificaciones
+-- =========================================================
+Columna             TipoDato    LongitudMaxima  PermiteNulos
+id	                int	        NULL            NO
+unes_notificacion	int	        NULL            YES
+titulo	            varchar	    200	            NO
+mensaje	            varchar	    -1          	NO
+leida	            bit	        NULL	        NO
+fecha_notificacion	datetime	NULL	        NO

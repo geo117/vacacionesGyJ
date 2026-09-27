@@ -1,4 +1,6 @@
 import os
+import io
+from datetime import datetime
 import pyodbc
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -198,17 +200,37 @@ def marcar_notificaciones_leidas():
 def get_pbi_colaborador_vacaciones():
     """Devuelve la información de BD_Integraciones.dbo.PBI_Colaborador_Vacaciones como API, fusionada con inf_asignacion."""
 
-    limit = request.args.get('limit', default=100, type=int)
-    if limit is None:
-        limit = 100
-    limit = max(1, min(limit, 1200))
+    unes_query = request.args.get('unes', default=None, type=str)
 
     conn1 = get_db_connection()
     if not conn1:
         return jsonify({'ok': False, 'error': 'No se pudo conectar a BD_Integraciones'}), 500
 
     try:
-        # 1. Obtener colaboradores de BD1
+        if unes_query is not None:
+            if not unes_query.isdigit():
+                return jsonify({'ok': False, 'error': 'La UNES debe contener solo números'}), 400
+            if len(unes_query) != 3:
+                return jsonify({'ok': False, 'error': 'La UNES debe tener exactamente 3 dígitos'}), 400
+
+            unes_value = unes_query[-3:]
+            cursor1 = conn1.cursor()
+            query1 = (
+                "SELECT TOP 1 IDCia_CO FROM BD_Integraciones.dbo.PBI_Colaborador_Vacaciones "
+                "WHERE RIGHT('000' + CAST(ISNULL(CAST(IDCia_CO AS VARCHAR), '') AS VARCHAR(20)), 3) = ?"
+            )
+            cursor1.execute(query1, (unes_value,))
+            row = cursor1.fetchone()
+            conn1.close()
+            if row is None:
+                return jsonify({'ok': True, 'exists': False, 'unes': unes_value}), 200
+            return jsonify({'ok': True, 'exists': True, 'unes': unes_value, 'idcia': row[0]}), 200
+
+        limit = request.args.get('limit', default=100, type=int)
+        if limit is None:
+            limit = 100
+        limit = max(1, min(limit, 1200))
+
         cursor1 = conn1.cursor()
         query1 = f"SELECT TOP {limit} * FROM BD_Integraciones.dbo.PBI_Colaborador_Vacaciones"
         cursor1.execute(query1)
@@ -282,6 +304,7 @@ def get_pbi_colaborador_vacaciones():
                 emp['diaFamilia1'] = format_date(match.get('dia_familia1'))
                 emp['diaFamilia2'] = format_date(match.get('dia_familia2'))
                 emp['motivoRechazo'] = match.get('motivo_rechazo') or ''
+                emp['th_asignacion'] = match.get('th_asignacion') or ''
                 
                 emp['periodos'] = [
                     {
@@ -335,6 +358,7 @@ def registrar_data():
         estado_asignacion = data.get('estado_asignacion', 'pendiente')
         dias_a_corte = data.get('dias_a_corte', 0)
         observaciones = data.get('observaciones')
+        motivo_rechazo = data.get('motivo_rechazo')
         
         periodo1_fecha1 = data.get('periodo1_fecha1')
         periodo1_fecha2 = data.get('periodo1_fecha2')
@@ -379,6 +403,10 @@ def registrar_data():
         periodo3_fecha1 = to_db_val(periodo3_fecha1)
         periodo3_fecha2 = to_db_val(periodo3_fecha2)
         fecha_regreso = to_db_val(fecha_regreso)
+        motivo_rechazo = to_db_val(motivo_rechazo)
+        
+        # New field: th_asignacion (Talento Humano who approved/rejected)
+        th_asignacion = to_db_val(data.get('th_asignacion'))
 
         cursor = conn.cursor()
         
@@ -397,6 +425,8 @@ def registrar_data():
                     estado_asignacion = ?,
                     dias_a_corte = ?,
                     observaciones = ?,
+                    motivo_rechazo = ?,
+                    th_asignacion = ?,
                     periodo1_fecha1 = ?,
                     periodo1_fecha2 = ?,
                     periodo1_dias1 = ?,
@@ -413,7 +443,7 @@ def registrar_data():
             """
             cursor.execute(query, (
                 empleado, cargo, desc_unes, unes, correo, estado_asignacion,
-                dias_a_corte, observaciones,
+                dias_a_corte, observaciones, motivo_rechazo, th_asignacion,
                 periodo1_fecha1, periodo1_fecha2, periodo1_dias1,
                 periodo2_fecha1, periodo2_fecha2, periodo2_dias2,
                 periodo3_fecha1, periodo3_fecha2, periodo3_dias3,
@@ -424,17 +454,17 @@ def registrar_data():
                 INSERT INTO inf_asignacion
                 (
                     identificacion, empleado, cargo, desc_unes, unes, correo, estado_asignacion,
-                    dias_a_corte, observaciones, 
+                    dias_a_corte, observaciones, motivo_rechazo, th_asignacion,
                     periodo1_fecha1, periodo1_fecha2, periodo1_dias1,
                     periodo2_fecha1, periodo2_fecha2, periodo2_dias2,
                     periodo3_fecha1, periodo3_fecha2, periodo3_dias3,
                     fecha_regreso, total_dias_empleado,
                     fecha_registro
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
             """
             cursor.execute(query, (
                 identificacion, empleado, cargo, desc_unes, unes, correo, estado_asignacion,
-                dias_a_corte, observaciones,
+                dias_a_corte, observaciones, motivo_rechazo, th_asignacion,
                 periodo1_fecha1, periodo1_fecha2, periodo1_dias1,
                 periodo2_fecha1, periodo2_fecha2, periodo2_dias2,
                 periodo3_fecha1, periodo3_fecha2, periodo3_dias3,
@@ -471,6 +501,8 @@ def ver_data(identificacion):
                 estado_asignacion,
                 dias_a_corte,
                 observaciones,
+                motivo_rechazo,
+                th_asignacion,
                 dia_familia1,
                 dia_familia2,
                 periodo1_fecha1,
@@ -518,6 +550,8 @@ def ver_data(identificacion):
             emp['dias_a_corte'] = float(emp.get('dias_a_corte') or 0)
             emp['total_dias_empleado'] = float(emp.get('total_dias_empleado') or 0)
             emp['observaciones'] = emp.get('observaciones') or ''
+            emp['motivoRechazo'] = emp.get('motivo_rechazo') or ''
+            emp['th_asignacion'] = emp.get('th_asignacion') or ''
 
             emp['periodo1_fecha1'] = format_date(emp.get('periodo1_fecha1'))
             emp['periodo1_fecha2'] = format_date(emp.get('periodo1_fecha2'))
@@ -714,6 +748,558 @@ def obtener_data(unes):
             conn.close()
         except Exception:
             pass
+
+def generar_pdf_reporte_vacaciones(employees, unes_filter, desc_unes):
+    """
+    Genera un PDF con formato vacaciones segun la plantilla institucional
+    (basada en el archivo 2-106 PETROLEOS.pdf).
+    Cumple la especificacion:
+      - A4 horizontal (landscape), margen 6mm
+      - 23 columnas con porcentajes exactos del HTML de referencia
+      - Super-encabezados verdes (#00B050) y azul (#0070C0) con colspans
+      - Estilo CSS equivalente: nowrap para cedulas/fechas/totales, zebra en filas,
+        tabla fixed-layout
+      - Formulas: Total Tomados = P1 + P2 + P3; Saldo Final = 0 si Total=0, sino
+        Pendientes - Total
+    Retorna los bytes del PDF generado.
+    """
+    import io
+    from datetime import datetime
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+
+    buffer = io.BytesIO()
+
+    # Pagina A4 horizontal con margen 6mm
+    page_size = landscape(A4)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=page_size,
+        leftMargin=6 * mm,
+        rightMargin=6 * mm,
+        topMargin=6 * mm,
+        bottomMargin=6 * mm,
+        title='Reporte Vacaciones',
+        author='GYJ'
+    )
+
+    styles = getSampleStyleSheet()
+
+    # Estilo del titulo del reporte
+    title_style = ParagraphStyle(
+        'TitleStyle',
+        parent=styles['Title'],
+        fontSize=11,
+        textColor=colors.HexColor('#003366'),
+        alignment=TA_CENTER,
+        spaceAfter=2,
+        fontName='Helvetica-Bold',
+        leading=13
+    )
+    subtitle_style = ParagraphStyle(
+        'SubtitleStyle',
+        parent=styles['Normal'],
+        fontSize=7,
+        textColor=colors.HexColor('#003366'),
+        alignment=TA_CENTER,
+        spaceAfter=4,
+        fontName='Helvetica-Bold',
+        leading=9
+    )
+
+    # Fila 1: super-encabezados (header-green / header-blue)
+    super_green_style = ParagraphStyle(
+        'SuperGreen',
+        parent=styles['Normal'],
+        fontSize=6.5,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        leading=8
+    )
+    super_blue_style = ParagraphStyle(
+        'SuperBlue',
+        parent=styles['Normal'],
+        fontSize=7.5,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        leading=9
+    )
+
+    # Fila 2: encabezados de columna (header-blue) - fontSize 6pt
+    col_header_style = ParagraphStyle(
+        'ColHeader',
+        parent=styles['Normal'],
+        fontSize=6,
+        textColor=colors.white,
+        alignment=TA_CENTER,
+        fontName='Helvetica-Bold',
+        leading=7
+    )
+
+    # Celdas de datos
+    cell_nowrap_style = ParagraphStyle(
+        'CellNoWrap',
+        parent=styles['Normal'],
+        fontSize=6.2,
+        textColor=colors.black,
+        alignment=TA_CENTER,
+        fontName='Helvetica',
+        leading=7.5,
+        wordWrap='CJK'
+    )
+    cell_nowrap_total_style = ParagraphStyle(
+        'CellNoWrapTotal',
+        parent=cell_nowrap_style,
+        fontName='Helvetica-Bold',
+        textColor=colors.HexColor('#003366')
+    )
+    cell_left_style = ParagraphStyle(
+        'CellLeft',
+        parent=cell_nowrap_style,
+        alignment=TA_LEFT
+    )
+
+    # -----------------------------------------------------------------
+    # Helpers
+    # -----------------------------------------------------------------
+    def html_escape(val):
+        if val is None:
+            return ''
+        s = str(val)
+        return (s.replace('&', '&amp;')
+                 .replace('<', '&lt;')
+                 .replace('>', '&gt;'))
+
+    def fmt_date(val):
+        if val is None or val == '':
+            return ''
+        try:
+            if hasattr(val, 'strftime'):
+                return val.strftime('%Y-%m-%d')
+            s = str(val)
+            if len(s) >= 10 and s[4:5] == '-':
+                return s[:10]
+            return s
+        except Exception:
+            return str(val) if val else ''
+
+    def safe_num(val, default=0):
+        if val is None or val == '':
+            return default
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
+    def fmt_num(val):
+        n = safe_num(val)
+        if n == 0:
+            return '0'
+        if n == int(n):
+            return str(int(n))
+        return f'{n:g}'
+
+    # -----------------------------------------------------------------
+    # Titulo fuera de la tabla
+    # -----------------------------------------------------------------
+    elements = []
+    unes_label = unes_filter or 'TODAS'
+    desc_label = desc_unes or ''
+    titulo = f"FORMATO VACACIONES - UNES {unes_label}"
+    if desc_label:
+        titulo += f" ({desc_label})"
+    elements.append(Paragraph(titulo, title_style))
+    elements.append(Paragraph(
+        f"Fecha de generación: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        subtitle_style
+    ))
+
+    # -----------------------------------------------------------------
+    # Fila 1: Super-encabezados (23 columnas exactas)
+    # -----------------------------------------------------------------
+    # Colocamos cada Paragraph en el indice exacto donde arranca su respectivo SPAN:
+    # Col 0 (A1..G1): 'FORMATO VACACIONES' (Azul)
+    # Col 7 (H1..J1): 'PRIMER CORTE...' (Verde)
+    # Col 10 (K1..M1): 'SEGUNDO CORTE...' (Verde)
+    # Col 13 (N1): '24 DE DICIEMBRE UNES' (Verde)
+    # Col 14 (O1..Q1): 'TERCER CORTE...' (Verde)
+    # Col 17 (R1): '31 DE DICIEMBRE UNES' (Verde)
+    # Col 18..22 (S1..W1): Celdas sin texto / sin fondo
+
+    super_row = [Paragraph('', super_green_style) for _ in range(23)]
+    
+    super_row[0] = Paragraph('FORMATO VACACIONES', super_blue_style)
+    super_row[7] = Paragraph(
+        'PRIMER CORTE 28 DE NOVIEMBRE AL 6 DICIEMBRE<br/>FECHA DE PAGO 28 DE NOVIEMBRE',
+        super_green_style
+    )
+    super_row[10] = Paragraph(
+        'SEGUNDO CORTE 7 AL 18 DE DICIEMBRE<br/>FECHA DE PAGO 15 DE DICIEMBRE',
+        super_green_style
+    )
+    super_row[13] = Paragraph('24 DE DICIEMBRE UNES', super_green_style)
+    super_row[14] = Paragraph(
+        'TERCER CORTE 19 DE DICEMBRE AL 12 DE ENERO<br/>FECHA DE PAGO 29 DICIEMBRE',
+        super_green_style
+    )
+    super_row[17] = Paragraph('31 DE DICIEMBRE UNES', super_green_style)
+
+    # -----------------------------------------------------------------
+    # Fila 2: Encabezados de columna
+    # -----------------------------------------------------------------
+    column_headers = [
+        'CEDULA',
+        'APELLIDOS Y NOMBRES',
+        'CARGO',
+        'UNES',
+        'FECHA DE INGRESO',
+        'Correo personal de la persona (notificacion)',
+        'DIAS PENDIENTES DE VACACIONES',
+        'FECHA DE INICIO DE VACACIONES',
+        'FECHA FIN DE VACACIONES',
+        'TOTAL DÍAS',
+        'FECHA DE INICIO DE VACACIONES2',
+        'FECHA DE TERMINACIÓN DE VACACIONES',
+        'TOTAL DÍAS3',
+        'DIA DE LA FAMILIA',
+        'FECHA DE INICIO DE VACACIONES4',
+        'FECHA DE TERMINACIÓN DE VACACIONES5',
+        'TOTAL DÍAS6',
+        'DÍA DE LA FAMILIA 7',
+        'TOTAL DIAS TOMADOS',
+        'SALDO FINAL A 30 ENERO',
+        'FECHA DE INGRESO LABORAL (REGRESO A TU LUGAR DE TRABAJO)',
+        'OBSERVACIONES',
+        'FIRMA',
+    ]
+    col_row = [Paragraph(html_escape(h).replace('\n', '<br/>'), col_header_style)
+               for h in column_headers]
+
+    # -----------------------------------------------------------------
+    # Anchos de columna
+    # -----------------------------------------------------------------
+    col_pct = [
+        6.1, 12.5, 10.0, 3.5, 5.5, 9.0, 4.0,
+        5.0, 5.0, 3.0,
+        5.0, 5.0, 3.0,
+        4.5,
+        5.0, 5.0, 3.0,
+        4.5,
+        3.5, 3.5, 5.5, 8.0, 4.0
+    ]
+    total_pct = sum(col_pct)
+    usable_w_pt = (297.0 - 12.0) / 25.4 * 72.0
+    col_widths = [round(usable_w_pt * p / total_pct, 2) for p in col_pct]
+
+    # -----------------------------------------------------------------
+    # Filas de datos
+    # -----------------------------------------------------------------
+    rows = [super_row, col_row]
+
+    for emp in employees:
+        cedula = str(emp.get('cedula', '') or '')
+        nombre = str(emp.get('Empleado', '') or '').upper()
+        cargo = str(emp.get('Cargo', '') or '').upper()
+        unes = str(emp.get('IDCia_CO', '') or '')
+        fecha_ingreso = fmt_date(emp.get('fecha_ingreso') or emp.get('Fecha_Ingreso'))
+        correo = str(emp.get('email', '') or '').lower()
+        dias_pendientes = safe_num(emp.get('dias_vacaciones_corteDic'))
+
+        periodos = emp.get('periodos') or [{}, {}, {}]
+        p1 = periodos[0] if len(periodos) > 0 else {}
+        p2 = periodos[1] if len(periodos) > 1 else {}
+        p3 = periodos[2] if len(periodos) > 2 else {}
+
+        p1_ini = fmt_date(p1.get('inicio'))
+        p1_fin = fmt_date(p1.get('fin'))
+        p1_dias = safe_num(p1.get('dias'))
+
+        p2_ini = fmt_date(p2.get('inicio'))
+        p2_fin = fmt_date(p2.get('fin'))
+        p2_dias = safe_num(p2.get('dias'))
+        dia_fam1 = fmt_date(emp.get('diaFamilia1'))
+
+        p3_ini = fmt_date(p3.get('inicio'))
+        p3_fin = fmt_date(p3.get('fin'))
+        p3_dias = safe_num(p3.get('dias'))
+        dia_fam2 = fmt_date(emp.get('diaFamilia2'))
+
+        total_tomados = p1_dias + p2_dias + p3_dias
+        saldo_final = 0 if total_tomados == 0 else (dias_pendientes - total_tomados)
+
+        fecha_regreso = fmt_date(emp.get('fechaIngreso') or emp.get('fecha_regreso'))
+        observaciones = str(emp.get('observaciones', '') or '')
+
+        row = [
+            Paragraph(html_escape(cedula), cell_nowrap_style),
+            Paragraph(html_escape(nombre), cell_left_style),
+            Paragraph(html_escape(cargo), cell_left_style),
+            Paragraph(html_escape(unes), cell_nowrap_style),
+            Paragraph(html_escape(fecha_ingreso), cell_nowrap_style),
+            Paragraph(html_escape(correo), cell_left_style),
+            Paragraph(fmt_num(dias_pendientes), cell_nowrap_style),
+            Paragraph(html_escape(p1_ini), cell_nowrap_style),
+            Paragraph(html_escape(p1_fin), cell_nowrap_style),
+            Paragraph(fmt_num(p1_dias), cell_nowrap_style),
+            Paragraph(html_escape(p2_ini), cell_nowrap_style),
+            Paragraph(html_escape(p2_fin), cell_nowrap_style),
+            Paragraph(fmt_num(p2_dias), cell_nowrap_style),
+            Paragraph(html_escape(dia_fam1), cell_nowrap_style),
+            Paragraph(html_escape(p3_ini), cell_nowrap_style),
+            Paragraph(html_escape(p3_fin), cell_nowrap_style),
+            Paragraph(fmt_num(p3_dias), cell_nowrap_style),
+            Paragraph(html_escape(dia_fam2), cell_nowrap_style),
+            Paragraph(fmt_num(total_tomados), cell_nowrap_total_style),
+            Paragraph(fmt_num(saldo_final), cell_nowrap_total_style),
+            Paragraph(html_escape(fecha_regreso), cell_nowrap_style),
+            Paragraph(html_escape(observaciones), cell_left_style),
+            Paragraph('', cell_nowrap_style),
+        ]
+        rows.append(row)
+
+    if len(employees) == 0:
+        empty_row = [Paragraph('-', cell_nowrap_style)] * 23
+        empty_row[1] = Paragraph('Sin datos para mostrar', cell_left_style)
+        rows.append(empty_row)
+
+    # -----------------------------------------------------------------
+    # Tabla con repeatRows=2
+    # -----------------------------------------------------------------
+    table = Table(rows, colWidths=col_widths, repeatRows=2)
+
+    colspan_specs = [
+        ('SPAN', (0, 0), (6, 0)),    # A:G - FORMATO VACACIONES (Azul)
+        ('SPAN', (7, 0), (9, 0)),    # H:J - PRIMER CORTE (Verde)
+        ('SPAN', (10, 0), (12, 0)),  # K:M - SEGUNDO CORTE (Verde)
+        ('SPAN', (13, 0), (13, 0)),  # N   - 24 DE DICIEMBRE UNES (Verde)
+        ('SPAN', (14, 0), (16, 0)),  # O:Q - TERCER CORTE (Verde)
+        ('SPAN', (17, 0), (17, 0)),  # R   - 31 DE DICIEMBRE UNES (Verde)
+        ('SPAN', (18, 0), (22, 0)),  # S:W - Transparente
+    ]
+
+    ts = TableStyle([
+        # ---- Fila 0: super-encabezados ----
+        ('BACKGROUND', (0, 0), (6, 0), colors.HexColor('#0070C0')),
+        ('BACKGROUND', (7, 0), (9, 0), colors.HexColor('#00B050')),
+        ('BACKGROUND', (10, 0), (12, 0), colors.HexColor('#00B050')),
+        ('BACKGROUND', (13, 0), (13, 0), colors.HexColor('#00B050')),
+        ('BACKGROUND', (14, 0), (16, 0), colors.HexColor('#00B050')),
+        ('BACKGROUND', (17, 0), (17, 0), colors.HexColor('#00B050')),
+
+        ('TEXTCOLOR', (0, 0), (17, 0), colors.white),
+        ('FONTNAME', (0, 0), (17, 0), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (22, 0), 'CENTER'),
+        ('VALIGN', (0, 0), (22, 0), 'MIDDLE'),
+
+        # ---- Fila 1: encabezados de columna (azul) ----
+        ('BACKGROUND', (0, 1), (22, 1), colors.HexColor('#0070C0')),
+        ('TEXTCOLOR', (0, 1), (22, 1), colors.white),
+        ('FONTNAME', (0, 1), (22, 1), 'Helvetica-Bold'),
+        ('ALIGN', (0, 1), (22, 1), 'CENTER'),
+        ('VALIGN', (0, 1), (22, 1), 'MIDDLE'),
+
+        # ---- Filas de datos ----
+        ('VALIGN', (0, 2), (22, -1), 'MIDDLE'),
+        ('ALIGN', (0, 2), (22, -1), 'CENTER'),
+        ('ALIGN', (1, 2), (1, -1), 'LEFT'),
+        ('ALIGN', (2, 2), (2, -1), 'LEFT'),
+        ('ALIGN', (5, 2), (5, -1), 'LEFT'),
+        ('ALIGN', (21, 2), (21, -1), 'LEFT'),
+        ('ROWBACKGROUNDS', (0, 2), (22, -1), [colors.white, colors.HexColor('#F4F7FA')]),
+        ('BACKGROUND', (18, 2), (19, -1), colors.HexColor('#EBF3FA')),
+
+        # ---- Bordes y paddings ----
+        ('GRID', (0, 0), (22, -1), 0.5, colors.HexColor('#B0C4DE')),
+        ('LINEBELOW', (0, 1), (22, 1), 0.75, colors.HexColor('#003366')),
+        ('TOPPADDING', (0, 0), (22, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (22, -1), 2),
+        ('LEFTPADDING', (0, 0), (22, -1), 2),
+        ('RIGHTPADDING', (0, 0), (22, -1), 2),
+    ])
+
+    for spec in colspan_specs:
+        ts.add(*spec)
+
+    table.setStyle(ts)
+    elements.append(table)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+@app.route('/exportar_reporte_pdf', methods=['GET', 'POST'])
+def exportar_reporte_pdf():
+    """
+    Genera un PDF con la información de vacaciones según la plantilla institucional.
+    Acepta los mismos filtros/parametros que la vista principal.
+    """
+    import io
+    from datetime import datetime as _dt
+
+    try:
+        # Obtener filtro de UNES (opcional)
+        unes_filter = request.args.get('unes', default=None, type=str)
+
+        # Obtener y fusionar datos igual que /pbi-colaborador-vacaciones
+        conn1 = get_db_connection()
+        if not conn1:
+            return jsonify({'ok': False, 'error': 'No se pudo conectar a BD_Integraciones'}), 500
+
+        try:
+            cursor1 = conn1.cursor()
+            if unes_filter:
+                unes_value = unes_filter[-3:] if len(unes_filter) >= 3 else unes_filter
+                query1 = """
+                    SELECT TOP 1200 * FROM BD_Integraciones.dbo.PBI_Colaborador_Vacaciones
+                    WHERE RIGHT('000' + CAST(ISNULL(CAST(IDCia_CO AS VARCHAR), '') AS VARCHAR(20)), 3) = ?
+                    ORDER BY Empleado
+                """
+                cursor1.execute(query1, (unes_value,))
+            else:
+                query1 = "SELECT TOP 1200 * FROM BD_Integraciones.dbo.PBI_Colaborador_Vacaciones ORDER BY Empleado"
+                cursor1.execute(query1)
+            rows1 = cursor1.fetchall()
+            columns1 = [col[0] for col in (cursor1.description or [])]
+
+            def serialize(value):
+                if value is None:
+                    return None
+                try:
+                    import decimal
+                    if isinstance(value, decimal.Decimal):
+                        return float(value)
+                except Exception:
+                    pass
+                try:
+                    return value.isoformat()
+                except Exception:
+                    return str(value)
+
+            employees = []
+            for row in rows1:
+                item = {}
+                for i, col in enumerate(columns1):
+                    item[col] = serialize(row[i])
+                employees.append(item)
+
+            cursor1.close()
+            conn1.close()
+        except Exception as e:
+            try:
+                conn1.close()
+            except Exception:
+                pass
+            return jsonify({'ok': False, 'error': f'Error al leer PBI_Colaborador_Vacaciones: {str(e)}'}), 500
+
+        # Fusionar con asignaciones de BD2
+        asignaciones = {}
+        conn2 = get_db_connection2()
+        if conn2:
+            try:
+                cursor2 = conn2.cursor()
+                if unes_filter:
+                    unes_full = unes_filter if 'unes_filter' in locals() and unes_filter else unes_filter
+                    unes_full = unes_filter if unes_filter.lower().startswith('2-') else f"2-{unes_filter}"
+                    cursor2.execute("SELECT * FROM inf_asignacion WHERE unes = ?", (unes_full,))
+                else:
+                    cursor2.execute("SELECT * FROM inf_asignacion")
+                rows2 = cursor2.fetchall()
+                columns2 = [col[0] for col in (cursor2.description or [])]
+
+                for row in rows2:
+                    asig_item = {}
+                    for i, col in enumerate(columns2):
+                        asig_item[col] = row[i]
+                    ident = asig_item.get('identificacion')
+                    if ident:
+                        asignaciones[str(ident)] = asig_item
+                cursor2.close()
+                conn2.close()
+            except Exception as e:
+                print(f"Error al obtener asignaciones de BD2: {e}")
+
+        def format_date(val):
+            if not val:
+                return ''
+            try:
+                return val.strftime('%Y-%m-%d')
+            except AttributeError:
+                return str(val)[:10]
+
+        for emp in employees:
+            cedula_str = str(emp.get('cedula', ''))
+            if cedula_str in asignaciones:
+                match = asignaciones[cedula_str]
+                emp['estado'] = match.get('estado_asignacion') or 'pendiente'
+                emp['totalDiasTomados'] = match.get('total_dias_empleado') or 0
+                emp['observaciones'] = match.get('observaciones') or ''
+                emp['fechaIngreso'] = format_date(match.get('fecha_regreso'))
+                emp['diaFamilia1'] = format_date(match.get('dia_familia1'))
+                emp['diaFamilia2'] = format_date(match.get('dia_familia2'))
+                emp['motivoRechazo'] = match.get('motivo_rechazo') or ''
+                emp['th_asignacion'] = match.get('th_asignacion') or ''
+
+                emp['periodos'] = [
+                    {
+                        'inicio': format_date(match.get('periodo1_fecha1')),
+                        'fin': format_date(match.get('periodo1_fecha2')),
+                        'dias': match.get('periodo1_dias1') or 0
+                    },
+                    {
+                        'inicio': format_date(match.get('periodo2_fecha1')),
+                        'fin': format_date(match.get('periodo2_fecha2')),
+                        'dias': match.get('periodo2_dias2') or 0
+                    },
+                    {
+                        'inicio': format_date(match.get('periodo3_fecha1')),
+                        'fin': format_date(match.get('periodo3_fecha2')),
+                        'dias': match.get('periodo3_dias3') or 0
+                    }
+                ]
+            else:
+                emp['estado'] = 'pendiente'
+                emp['totalDiasTomados'] = 0
+                emp['observaciones'] = ''
+                emp['fechaIngreso'] = ''
+                emp['diaFamilia1'] = ''
+                emp['diaFamilia2'] = ''
+                emp['motivoRechazo'] = ''
+                emp['periodos'] = [
+                    {'inicio': '', 'fin': '', 'dias': 0},
+                    {'inicio': '', 'fin': '', 'dias': 0},
+                    {'inicio': '', 'fin': '', 'dias': 0}
+                ]
+
+        # Determinar descripción de la UNES
+        desc_unes = ''
+        if employees:
+            desc_unes = employees[0].get('DescCO', '') or ''
+
+        pdf_bytes = generar_pdf_reporte_vacaciones(employees, unes_filter or '', desc_unes)
+
+        # Nombre de archivo dinámico: 2-{unes}_vacaciones.pdf (ej. 2-123_vacaciones.pdf)
+        unes_part = unes_filter if unes_filter else 'todos'
+        if not unes_part.lower().startswith('2-'):
+            unes_part = f"2-{unes_part}"
+        filename = f"{unes_part}_vacaciones.pdf"
+
+        from flask import send_file
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        print(f"Error en exportar_reporte_pdf: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT2', 5000))

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSocket } from '../context/SocketContext';
 import { Container, Navbar, Nav, Button, Dropdown, Badge } from 'react-bootstrap';
-import { FaSignOutAlt, FaBell } from 'react-icons/fa';
+import { FaSignOutAlt, FaBell, FaUser } from 'react-icons/fa';
 import { useNavigate } from 'react-router-dom';
 import imagen from '../assets/logo_blanco.png';
 import '../styles/Header.css';
@@ -23,13 +23,13 @@ const Header = () => {
     : notifications.filter(notif => notif.unes?.toString() === userUnes.toString());
   
   const [showBadge, setShowBadge] = useState(false);
+  const [newCount, setNewCount] = useState(0);
   const prevLength = useRef(0);
 
   useEffect(() => {
     if (filteredNotifications.length > prevLength.current) {
+      setNewCount(prev => prev + (filteredNotifications.length - prevLength.current));
       setShowBadge(true);
-    } else if (filteredNotifications.length === 0) {
-      setShowBadge(false);
     }
     prevLength.current = filteredNotifications.length;
   }, [filteredNotifications.length]);
@@ -40,6 +40,9 @@ const Header = () => {
 
   const handleToggle = async (isOpen) => {
     if (isOpen) {
+      // Al abrir el recuadro: ocultar el contador pero conservar los mensajes
+      setShowBadge(false);
+      setNewCount(0);
       try {
         await fetch(`${API_URL}/marcar_notificaciones_leidas`, {
           method: 'POST',
@@ -48,7 +51,6 @@ const Header = () => {
           },
           body: JSON.stringify({ unes: isTalentoHumano ? null : userUnes }),
         });
-        socket.emit('request_notifications');
       } catch (error) {
         console.error('Error marcando notificaciones como leídas:', error);
       }
@@ -71,6 +73,10 @@ const Header = () => {
         <Navbar.Collapse id="basic-navbar-nav" className="justify-content-end">
           <Nav className="align-items-center">
             
+            <Button variant="outline-light" className="ms-2" onClick={() => navigate('/adminstrador')}>
+              <FaUser /> Administrador
+            </Button>
+
             <Dropdown onToggle={handleToggle} align="end" className="notification-dropdown">
                 <Dropdown.Toggle 
                   as="button" 
@@ -78,13 +84,13 @@ const Header = () => {
                 >
                   <FaBell size={20} />
                   {showBadge && (
-                    <Badge 
-                      pill 
-                      bg="danger" 
+                    <Badge
+                      pill
+                      bg="danger"
                       className="position-absolute top-0 start-100 translate-middle"
                       style={{ fontSize: '0.6rem', marginTop: '5px', marginLeft: '-5px' }}
                     >
-                      {filteredNotifications.length}
+                      {newCount}
                     </Badge>
                   )}
                 </Dropdown.Toggle>

@@ -3,6 +3,9 @@ import { useSocket } from '../context/SocketContext';
 import { Container, Card, Row, Col, Button, Table, Dropdown, Modal, Form } from 'react-bootstrap';
 import { FaEllipsisV, FaUser, FaInfoCircle, FaCalendarCheck, FaClock, FaEdit, FaAngleDoubleRight, FaAngleRight, FaAngleLeft, FaAngleDoubleLeft, FaCheckCircle, FaTimesCircle } from 'react-icons/fa';
 import Swal from 'sweetalert2';
+import ApprovedEmployeesModal from '../components/ApprovedEmployeesModal';
+import RejectedEmployeesModal from '../components/RejectedEmployeesModal';
+import DownloadPlanoModal from '../components/DownloadPlanoModal';
 import '../styles/Home.css';
 
 const Home = () => {
@@ -12,6 +15,9 @@ const Home = () => {
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showRejectionDetailModal, setShowRejectionDetailModal] = useState(false);
+  const [showApprovedModal, setShowApprovedModal] = useState(false);
+  const [showRejectedModal, setShowRejectedModal] = useState(false);
+  const [showDownloadPlanoModal, setShowDownloadPlanoModal] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [currentEmployeeId, setCurrentEmployeeId] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -25,6 +31,7 @@ const Home = () => {
 
   const [loading, setLoading] = useState(true);
   const [employees, setEmployees] = useState([]);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   useEffect(() => {
     const fetchEmployees = async () => {
@@ -68,7 +75,9 @@ const Home = () => {
   ];
 
   const talentohumano = [
-    'talentohumano@gyj.com.co','direccion_th@gyj.com.co'
+    {'correo':'talentohumano@gyj.com.co', 'nombre': 'Jessica Alexandra Diaz'},
+    {'correo':'direccion_th@gyj.com.co', 'nombre': 'Carolina Rivera Vargas'},
+    {'correo':'auxiliar.nomina@gyj.com.co', 'nombre': 'Kerrin Yesenia Collazos'}
   ];
 
   const calculateDays = (start, end) => {
@@ -150,6 +159,7 @@ const Home = () => {
       estado_asignacion: selectedEmployee.estado || 'pendiente',
       dias_a_corte: selectedEmployee.dias_vacaciones_corteDic,
       observaciones: formData.observaciones,
+      motivo_rechazo: selectedEmployee.motivoRechazo || '',
       periodo1_fecha1: formData.fechaInicio1 || null,
       periodo1_fecha2: formData.fechaFin1 || null,
       periodo1_dias1: formData.totalDias1 || 0,
@@ -288,6 +298,8 @@ const Home = () => {
         estado_asignacion: newStatus,
         dias_a_corte: emp.dias_vacaciones_corteDic,
         observaciones: emp.observaciones || '',
+        motivo_rechazo: emp.motivoRechazo || '',
+        th_asignacion: talentoHumanoUser?.nombre || '',
         periodo1_fecha1: p1.inicio || null,
         periodo1_fecha2: p1.fin || null,
         periodo1_dias1: p1.dias || 0,
@@ -314,7 +326,7 @@ const Home = () => {
       }
 
       setEmployees(employees.map(e => 
-        e.cedula === id ? { ...e, estado: newStatus } : e
+        e.cedula === id ? { ...e, estado: newStatus, th_asignacion: talentoHumanoUser?.nombre } : e
       ));
 
       if (socket) {
@@ -369,6 +381,8 @@ const Home = () => {
         estado_asignacion: 'rechazada',
         dias_a_corte: targetEmployee.dias_vacaciones_corteDic,
         observaciones: targetEmployee.observaciones || '',
+        motivo_rechazo: rejectionReason,
+        th_asignacion: talentoHumanoUser?.nombre || '',
         periodo1_fecha1: p1.inicio || null,
         periodo1_fecha2: p1.fin || null,
         periodo1_dias1: p1.dias || 0,
@@ -395,7 +409,7 @@ const Home = () => {
       }
 
       setEmployees(employees.map(emp => 
-        emp.cedula === currentEmployeeId ? { ...emp, estado: 'rechazada', motivoRechazo: rejectionReason } : emp
+        emp.cedula === currentEmployeeId ? { ...emp, estado: 'rechazada', motivoRechazo: rejectionReason, th_asignacion: talentoHumanoUser?.nombre } : emp
       ));
 
       if (socket) {
@@ -417,7 +431,8 @@ const Home = () => {
 
   const userUnes = localStorage.getItem('userUnes') || '';
   const userEmail = (localStorage.getItem('userEmail') || '').toLowerCase();
-  const isTalentoHumano = talentohumano.map(e => e.toLowerCase()).includes(userEmail);
+  const talentoHumanoUser = talentohumano.find(th => th.correo.toLowerCase() === userEmail);
+  const isTalentoHumano = !!talentoHumanoUser;
   
   const userEmployee = employees.find(emp => emp.IDCia_CO?.toString().slice(-3) === userUnes);
   const userDesc = userEmployee?.DescCO || '';
@@ -451,6 +466,9 @@ const Home = () => {
   const approvedCount = filteredEmployees.filter(emp => emp.estado === 'aprobado').length;
   const rejectedCount = filteredEmployees.filter(emp => emp.estado === 'rechazada').length;
 
+  // Verificar si todos los empleados están aprobados
+  const allApproved = filteredEmployees.length > 0 && filteredEmployees.every(emp => emp.estado === 'aprobado');
+
   const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
   const indexOfLastItem = currentPage * itemsPerPage;
   const indexOfFirstItem = indexOfLastItem - itemsPerPage;
@@ -474,13 +492,28 @@ const Home = () => {
 
   useEffect(() => {
     const fetchDataAsignacion = async () => {
-      const unesFilter = isTalentoHumano ? selectedUnes : userUnes;
+      let unesFilter;
+      
+      if (isTalentoHumano) {
+        // Para Talento Humano: si hay UNES seleccionada, usar esa; si es "Todas", no filtrar
+        unesFilter = selectedUnes || 'todas';
+      } else {
+        // Para usuarios normales: usar su UNES
+        unesFilter = userUnes;
+      }
+      
       if (!unesFilter) {
         setDataAsignacion({});
         return;
       }
+      
       try {
-        const response = await fetch(`${API_URL}/obtener_data/2-${unesFilter}`);
+        // Si es "todas", llamar endpoint sin filtro de UNES específico
+        const url = unesFilter === 'todas' 
+          ? `${API_URL}/obtener_data/2-todas`
+          : `${API_URL}/obtener_data/2-${unesFilter}`;
+          
+        const response = await fetch(url);
         if (!response.ok) {
           if (response.status === 404) {
             setDataAsignacion({});
@@ -500,6 +533,128 @@ const Home = () => {
     };
     fetchDataAsignacion();
   }, [userUnes, selectedUnes, isTalentoHumano]);
+
+  const handleExportarReporte = async () => {
+    if (exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      // Determinar la UNES a filtrar según el rol
+      let unesParam = '';
+      if (isTalentoHumano) {
+        unesParam = selectedUnes || '';
+      } else {
+        unesParam = userUnes || '';
+      }
+
+      // Construir URL: si hay UNES, agregar query param
+      let url = `${API_URL}/exportar_reporte_pdf`;
+      if (unesParam) {
+        const unesQuery = unesParam.toString().startsWith('2-')
+          ? unesParam.toString().slice(-3)
+          : unesParam.toString();
+        url += `?unes=${encodeURIComponent(unesQuery)}`;
+      }
+
+      const response = await fetch(url, { method: 'GET' });
+      if (!response.ok) {
+        let errMsg = 'No se pudo generar el reporte PDF.';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) errMsg = errData.error;
+        } catch { /* ignore */ }
+        throw new Error(errMsg);
+      }
+
+      // Obtener nombre del archivo desde el header Content-Disposition
+      const disposition = response.headers.get('Content-Disposition') || '';
+      let filename = '2-vacaciones.pdf';
+      const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (match && match[1]) {
+        filename = match[1].replace(/['"]/g, '').trim();
+      } else {
+        // Fallback: armar nombre dinámico
+        const unesPart = unesParam
+          ? (unesParam.toString().startsWith('2-') ? unesParam.toString() : `2-${unesParam}`)
+          : '2';
+        filename = `${unesPart}_vacaciones.pdf`;
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      Swal.fire({
+        icon: 'success',
+        title: 'Reporte generado',
+        text: `El archivo ${filename} se ha descargado correctamente.`,
+        confirmButtonColor: '#003366',
+        timer: 2500
+      });
+    } catch (error) {
+      console.error('Error exportando reporte:', error);
+      Swal.fire({
+        icon: 'error',
+        title: 'Error al exportar',
+        text: error.message || 'No se pudo generar el reporte PDF.',
+        confirmButtonColor: '#003366'
+      });
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
+  const handleDownloadPlano = async ({ type, unes }) => {
+    try {
+      let url = `${API_URL}/exportar_plano`;
+      let filename = 'plano_vacaciones.pdf';
+      
+      if (type === 'unes' && unes) {
+        url += `?unes=${encodeURIComponent(unes)}`;
+        filename = `plano_vacaciones_unes_${unes}.pdf`;
+      } else {
+        filename = 'plano_vacaciones_general.pdf';
+      }
+
+      const response = await fetch(url, { method: 'GET' });
+      
+      if (!response.ok) {
+        let errMsg = 'No se pudo generar el plano.';
+        try {
+          const errData = await response.json();
+          if (errData && errData.error) errMsg = errData.error;
+        } catch { /* ignore */ }
+        throw new Error(errMsg);
+      }
+
+      // Obtener nombre del archivo desde el header Content-Disposition
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (match && match[1]) {
+        filename = match[1].replace(/['"]/g, '').trim();
+      }
+
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      return { success: true, message: `El archivo ${filename} se ha descargado correctamente.` };
+    } catch (error) {
+      console.error('Error descargando plano:', error);
+      return { success: false, message: error.message || 'No se pudo descargar el plano.' };
+    }
+  };
 
   return (
     <div style={{ backgroundColor: '#f8f9fa', minHeight: '100vh', paddingTop: '20px' }}>
@@ -521,7 +676,7 @@ const Home = () => {
                   {isTalentoHumano ? 'Departamento' : 'UNES'}
                 </span>*/}
                 <span className="fs-5 fw-bold" style={{ color: '#003366' }}>
-                  {isTalentoHumano ? 'Talento Humano GYJ' : `${userUnes}${userDesc ? ` - ${userDesc}` : ''}`}
+                  {isTalentoHumano ? talentoHumanoUser.nombre : `${userUnes}${userDesc ? ` - ${userDesc}` : ''}`}
                 </span>
               </div>
             </Col>
@@ -539,15 +694,45 @@ const Home = () => {
             </Card>
           </Col>
           <Col md={3}>
-            <Card className="border-0 shadow-sm text-center p-3" style={{ borderLeft: '5px solid #198754' }}>
+            <Card className="border-0 shadow-sm text-center p-3 position-relative" style={{ borderLeft: '5px solid #198754' }}>
               <div className="text-muted small fw-bold text-uppercase">Aprobadas</div>
               <div className="fs-2 fw-bold text-dark">{approvedCount}</div>
+              {approvedCount > 0 && (
+                <a
+                  href="#"
+                  role="button"
+                  className="position-absolute fw-bold text-success text-decoration-none"
+                  style={{ bottom: '8px', right: '12px', fontSize: '0.8rem', cursor: 'pointer', zIndex: 5 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowApprovedModal(true);
+                  }}
+                >
+                  Ver más →
+                </a>
+              )}
             </Card>
           </Col>
           <Col md={3}>
-            <Card className="border-0 shadow-sm text-center p-3" style={{ borderLeft: '5px solid #dc3545' }}>
+            <Card className="border-0 shadow-sm text-center p-3 position-relative" style={{ borderLeft: '5px solid #dc3545' }}>
               <div className="text-muted small fw-bold text-uppercase">Rechazadas</div>
               <div className="fs-2 fw-bold text-dark">{rejectedCount}</div>
+              {rejectedCount > 0 && (
+                <a
+                  href="#"
+                  role="button"
+                  className="position-absolute fw-bold text-danger text-decoration-none"
+                  style={{ bottom: '8px', right: '12px', fontSize: '0.8rem', cursor: 'pointer', zIndex: 5 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setShowRejectedModal(true);
+                  }}
+                >
+                  Ver más →
+                </a>
+              )}
             </Card>
           </Col>
           {/*<Col md={3}>
@@ -606,18 +791,37 @@ const Home = () => {
         <Card className="border-0 shadow-sm overflow-hidden">
           <Card.Header className="bg-white py-3 border-0 d-flex justify-content-between align-items-center">
             <h5 className="mb-0 fw-bold" style={{ color: '#003366' }}>Listado de Empleados</h5>
-            <Button variant="primary" size="sm" className="px-4 rounded-pill" style={{ backgroundColor: '#003366' }} onClick={() => Swal.fire({
-  title: 'vista reporte',
-  icon: 'info',
-  customClass: {
-    container: 'swal2-custom',
-    content: 'swal2-custom-content'
-  },
-  padding: '20px',
-  background: '#fff8e1',
-  color: '#003366',
-  width: '300px'
-})}>Exportar Reporte</Button>
+            <div className="d-flex gap-2">
+              {isTalentoHumano && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  className="px-4 rounded-pill"
+                  style={{ backgroundColor: '#003366' }}
+                  onClick={() => setShowDownloadPlanoModal(true)}
+                >
+                  Descargar Plano
+                </Button>
+              )}
+              <Button
+                variant="primary"
+                size="sm"
+                className="px-4 rounded-pill"
+                style={{ backgroundColor: '#003366' }}
+                disabled={!isTalentoHumano || exportingPdf || !allApproved}
+                onClick={handleExportarReporte}
+                title={!isTalentoHumano ? 'Solo disponible para Talento Humano' : !allApproved ? 'Todos los empleados deben estar aprobados' : ''}
+              >
+                {exportingPdf ? (
+                  <>
+                    <span className="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                    Generando...
+                  </>
+                ) : (
+                  'Exportar Reporte'
+                )}
+              </Button>
+            </div>
           </Card.Header>
           <div style={{ maxHeight: filteredEmployees.length > 10 ? '900px' : 'auto', overflowY: filteredEmployees.length > 10 ? 'auto' : 'visible' }} className={filteredEmployees.length > 10 ? 'scrollbar-hidden' : ''}>
             <Table hover className="align-middle mb-0 custom-table">
@@ -670,10 +874,25 @@ const Home = () => {
                       <td className="px-4 py-3 text-center fw-bold text-primary">{emp.dias_vacaciones_corteDic ?? '-'}</td>
                        <td className="px-4 py-3 text-center">
                          {(() => {
-                           const total = dataAsignacion?.[String(emp.cedula)]?.total_dias_empleado;
-                           const n = total === undefined || total === null ? 0 : Number(total);
-                           const displayN = Number.isFinite(n) ? n.toFixed(1) : 0;
-                           return <span style={getTotalDiasStyle(n)}>{displayN}</span>;
+                           // Calcular SALDO FINAL = dias_vacaciones_corteDic - totalDiasTomados
+                           // Priorizar datos locales cuando se han asignado fechas
+                           const diasCorte = Number(emp.dias_vacaciones_corteDic) || 0;
+                           const localTomados = emp.totalDiasTomados;
+                           const backendTomados = dataAsignacion?.[String(emp.cedula)]?.total_dias_empleado;
+                           
+                           // Usar total local si existe y es > 0, sino usar backend
+                           const totalTomados = (localTomados !== undefined && localTomados !== null && Number(localTomados) > 0) 
+                             ? Number(localTomados) 
+                             : (backendTomados !== undefined && backendTomados !== null ? Number(backendTomados) : 0);
+                           
+                           // Si no se han asignado fechas (totalTomados = 0), mostrar 0.0
+                           if (totalTomados === 0) {
+                             return <span style={getTotalDiasStyle(0)}>0.0</span>;
+                           }
+                           
+                           const saldoFinal = diasCorte - totalTomados;
+                           const displayN = Number.isFinite(saldoFinal) ? saldoFinal.toFixed(1) : 0;
+                           return <span style={getTotalDiasStyle(saldoFinal)}>{displayN}</span>;
                          })()}
                        </td>
                       <td className="px-4 py-3 text-center">
@@ -814,13 +1033,50 @@ const Home = () => {
                   <label className="text-muted small fw-bold text-uppercase d-block mb-1"><FaInfoCircle className="me-2" />Observaciones</label>
                   <p className="bg-light p-3 rounded border-start border-primary border-4">{selectedEmployee.observaciones}</p>
                 </div>
-                <Row>
-                  <Col md={12}>
+                <Row className="g-3 text-center">
+                  <Col md={4}>
                     <label className="text-muted small fw-bold text-uppercase d-block mb-1">Confirma Fechas</label>
                     <p className="fw-bold fs-5" style={getConfirmaFechasStyle(selectedEmployee.estado)}>
                       {selectedEmployee.estado === 'aprobado' ? 'Aprobado' : selectedEmployee.estado === 'rechazada' ? 'Rechazado' : 'Pendiente'}
                     </p>
                   </Col>
+                  <Col md={4}>
+                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Día No Remunerado</label>
+                    {(() => {
+                      // Calcular saldo final para determinar si mostrar licencia no remunerada
+                      const diasCorte = Number(selectedEmployee.dias_vacaciones_corteDic) || 0;
+                      const localTomados = selectedEmployee.totalDiasTomados;
+                      const backendTomados = dataAsignacion?.[String(selectedEmployee.cedula)]?.total_dias_empleado;
+                      const totalTomados = (localTomados !== undefined && localTomados !== null && Number(localTomados) > 0) 
+                        ? Number(localTomados) 
+                        : (backendTomados !== undefined && backendTomados !== null ? Number(backendTomados) : 0);
+                      const saldoFinal = diasCorte - totalTomados;
+                      
+                      // Si saldo final < 3, mostrar "licencia no remunerada" en rojo
+                      if (saldoFinal < 3 && totalTomados > 0) {
+                        return <p className="fw-bold fs-5 text-danger">licencia no remunerada</p>;
+                      }
+                      return <p className="fw-bold fs-5 text-warning">{selectedEmployee.diaNoRemunerado || 'No aplica'}</p>;
+                    })()}
+                  </Col>
+                  <Col md={4}>
+                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Aprobadas por</label>
+                    <p className="fw-bold fs-5 text-success">
+                      {selectedEmployee.th_asignacion 
+                        ? `${selectedEmployee.th_asignacion}`
+                        : (selectedEmployee.aprobadoPorGeovanny ? 'Aprobadas por Geovanny' : 'Pendiente de aprobación')}
+                    </p>
+                  </Col>
+                  {selectedEmployee.estado === 'rechazada' && (
+                    <Col md={12}>
+                      <label className="text-muted small fw-bold text-uppercase d-block mb-1">
+                        <FaTimesCircle className="me-2 text-danger" />Motivo del Rechazo
+                      </label>
+                      <div className="bg-light p-3 rounded border-start border-danger border-4" style={{ fontSize: '0.85rem', minHeight: '38px' }}>
+                        {selectedEmployee.motivoRechazo || 'Sin motivo especificado.'}
+                      </div>
+                    </Col>
+                  )}
                 </Row>
                 <div className="mt-4">
                   <div className="d-flex justify-content-between align-items-center mb-3">
@@ -1029,6 +1285,33 @@ const Home = () => {
         </Modal.Footer>
       </Modal>
 
+      {/* Modal: Ver Empleados Aprobados */}
+      <ApprovedEmployeesModal
+        show={showApprovedModal}
+        onHide={() => setShowApprovedModal(false)}
+        employees={filteredEmployees}
+        dataAsignacion={dataAsignacion}
+        onViewEmployee={(emp) => {
+          setShowApprovedModal(false);
+          handleViewEmployee(emp);
+        }}
+      />
+
+      {/* Modal: Ver Empleados Rechazados */}
+      <RejectedEmployeesModal
+        show={showRejectedModal}
+        onHide={() => setShowRejectedModal(false)}
+        employees={filteredEmployees}
+        onViewEmployee={(emp) => {
+          setShowRejectedModal(false);
+          handleViewEmployee(emp);
+        }}
+        onViewRejection={(emp) => {
+          setShowRejectedModal(false);
+          handleViewRejection(emp);
+        }}
+      />
+
       {/* Modal: Ingresar Motivo de Rechazo */}
       <Modal show={showRejectModal} onHide={() => setShowRejectModal(false)} centered>
         <Modal.Header closeButton className="bg-danger text-white">
@@ -1052,6 +1335,15 @@ const Home = () => {
           <Button variant="danger" size="sm" className="px-4" onClick={confirmReject}>Confirmar Rechazo</Button>
         </Modal.Footer>
       </Modal>
+
+      {/* Modal: Descargar Plano */}
+      <DownloadPlanoModal
+        show={showDownloadPlanoModal}
+        onHide={() => setShowDownloadPlanoModal(false)}
+        uniqueUnes={uniqueUnes}
+        selectedUnes={selectedUnes}
+        onDownload={handleDownloadPlano}
+      />
 
     </div>
   );
