@@ -12,16 +12,16 @@ const Header = () => {
   const userUnes = localStorage.getItem('userUnes') || '';
   const userEmail = (localStorage.getItem('userEmail') || '').toLowerCase();
   const API_URL = 'http://127.0.0.1:5000';
-  
+
   const talentohumano = [
-    'talentohumano@gyj.com.co','direccion_th@gyj.com.co'
+    'talentohumano@gyj.com.co', 'direccion_th@gyj.com.co'
   ];
   const isTalentoHumano = talentohumano.map(e => e.toLowerCase()).includes(userEmail);
 
-  const filteredNotifications = isTalentoHumano 
-    ? notifications 
+  const filteredNotifications = isTalentoHumano
+    ? notifications
     : notifications.filter(notif => notif.unes?.toString() === userUnes.toString());
-  
+
   const [showBadge, setShowBadge] = useState(false);
   const [newCount, setNewCount] = useState(0);
   const prevLength = useRef(0);
@@ -40,7 +40,6 @@ const Header = () => {
 
   const handleToggle = async (isOpen) => {
     if (isOpen) {
-      // Al abrir el recuadro: ocultar el contador pero conservar los mensajes
       setShowBadge(false);
       setNewCount(0);
       try {
@@ -60,72 +59,76 @@ const Header = () => {
   return (
     <Navbar className="navbar-custom" variant="dark" expand="lg" fixed="top">
       <Container fluid>
-        <Navbar.Brand href="#home">
+        <Navbar.Brand href="#" onClick={(e) => { e.preventDefault(); navigate('/home'); }}>
           <img
             alt=""
             src={imagen}
             width="80"
             height="50"
-            className="d-inline-block align-top me-2"
+            className="d-inline-block align-top me-2 cursor-pointer"
           />
         </Navbar.Brand>
         <Navbar.Toggle aria-controls="basic-navbar-nav" />
         <Navbar.Collapse id="basic-navbar-nav" className="justify-content-end">
           <Nav className="align-items-center">
-            
-            <Button variant="outline-light" className="ms-2" onClick={() => navigate('/adminstrador')}>
+
+            <Button
+              variant="link"
+              className="text-white ms-2 p-0 d-inline-flex align-items-center gap-2 admin-btn text-decoration-none"
+              onClick={() => navigate('/adminstrador')}
+            >
               <FaUser /> Administrador
             </Button>
 
-            <Dropdown onToggle={handleToggle} align="end" className="notification-dropdown">
-                <Dropdown.Toggle 
-                  as="button" 
-                  className="btn btn-link position-relative p-2 border-0 text-white shadow-none no-caret"
-                >
-                  <FaBell size={20} />
-                  {showBadge && (
-                    <Badge
-                      pill
-                      bg="danger"
-                      className="position-absolute top-0 start-100 translate-middle"
-                      style={{ fontSize: '0.6rem', marginTop: '5px', marginLeft: '-5px' }}
-                    >
-                      {newCount}
-                    </Badge>
-                  )}
-                </Dropdown.Toggle>
+            <Dropdown onToggle={handleToggle} align="end" className="notification-dropdown ms-3">
+              <Dropdown.Toggle
+                as="button"
+                className="btn btn-link position-relative p-2 border-0 text-white shadow-none no-caret"
+              >
+                <FaBell size={20} />
+                {showBadge && (
+                  <Badge
+                    pill
+                    bg="danger"
+                    className="position-absolute top-0 start-100 translate-middle"
+                    style={{ fontSize: '0.6rem', marginTop: '5px', marginLeft: '-5px' }}
+                  >
+                    {newCount}
+                  </Badge>
+                )}
+              </Dropdown.Toggle>
 
-                <Dropdown.Menu className="shadow border-0 py-0 mt-3 notification-menu">
-                  <div className="p-3 border-bottom bg-light">
-                    <h6 className="mb-0 fw-bold">Notificaciones Recientes</h6>
-                  </div>
-                  <div className="notification-list">
-                    {filteredNotifications.length > 0 ? (
-                      filteredNotifications.map((notif, index) => (
-                        <Dropdown.Item key={index} className="p-3 border-bottom whitespace-normal">
-                          <div className="d-flex justify-content-between align-items-start mb-1">
-                            <Badge bg={notif.type === 'success' ? 'success' : 'info'} className="me-2" style={{ fontSize: '0.6rem' }}>
-                              {notif.type || 'info'}
-                            </Badge>
-                            <small className="text-muted" style={{ fontSize: '0.7rem' }}>{notif.time}</small>
-                          </div>
-                          <div className="small text-dark fw-medium" style={{ lineHeight: '1.2' }}>{notif.text}</div>
-                        </Dropdown.Item>
-                      ))
-                    ) : (
-                      <div className="p-4 text-center text-muted">
-                        <small>No hay notificaciones nuevas</small>
-                      </div>
-                    )}
-                  </div>
+              <Dropdown.Menu className="shadow border-0 py-0 mt-3 notification-menu">
+                <div className="p-3 border-bottom bg-light">
+                  <h6 className="mb-0 fw-bold">Notificaciones Recientes</h6>
+                </div>
+                <div className="notification-list">
+                  {filteredNotifications.length > 0 ? (
+                    filteredNotifications.map((notif, index) => (
+                      <Dropdown.Item key={index} className="p-3 border-bottom whitespace-normal">
+                        <div className="d-flex justify-content-between align-items-start mb-1">
+                          <Badge bg={notif.type === 'success' ? 'success' : 'info'} className="me-2" style={{ fontSize: '0.6rem' }}>
+                            {notif.type || 'info'}
+                          </Badge>
+                          <small className="text-muted" style={{ fontSize: '0.7rem' }}>{notif.time}</small>
+                        </div>
+                        <div className="small text-dark fw-medium" style={{ lineHeight: '1.2' }}>{notif.text}</div>
+                      </Dropdown.Item>
+                    ))
+                  ) : (
+                    <div className="p-4 text-center text-muted">
+                      <small>No hay notificaciones nuevas</small>
+                    </div>
+                  )}
+                </div>
                 {/* <div className="p-2 text-center bg-light">
                   <small className="text-primary cursor-pointer">Ver todas</small>
                 </div> */}
               </Dropdown.Menu>
             </Dropdown>
 
-            <Button 
-              variant="outline-light" 
+            <Button
+              variant="outline-light"
               className="ms-lg-4 mt-2 mt-lg-0"
               onClick={handleLogout}
             >

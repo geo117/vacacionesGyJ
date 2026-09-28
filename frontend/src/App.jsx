@@ -1,6 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import Login from './views/Login';
 import Home from './views/Home';
+import Adminstrador from './views/adminstrador';
 import Header from './components/Header';
 import { SocketProvider } from './context/SocketProvider';
 import 'bootstrap/dist/css/bootstrap.min.css';
@@ -17,6 +18,7 @@ const AppContent = () => {
         <Routes>
           <Route path="/" element={<Login />} />
           <Route path="/home" element={<Home />} />
+          <Route path="/adminstrador" element={<Adminstrador />} />
         </Routes>
       </div>
     </>
