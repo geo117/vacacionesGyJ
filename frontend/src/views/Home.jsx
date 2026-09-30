@@ -611,20 +611,20 @@ const Home = () => {
 
   const handleDownloadPlano = async ({ type, unes }) => {
     try {
-      let url = `${API_URL}/exportar_plano`;
-      let filename = 'plano_vacaciones.pdf';
-      
+      let url = `${API_URL}/generar_plano`;
+      let filename = 'plano_vacaciones_general.xlsx';
+
       if (type === 'unes' && unes) {
-        url += `?unes=${encodeURIComponent(unes)}`;
-        filename = `plano_vacaciones_unes_${unes}.pdf`;
+        url += `?type=unes&unes=${encodeURIComponent(unes)}`;
+        filename = `plano_vacaciones_unes_${unes}.xlsx`;
       } else {
-        filename = 'plano_vacaciones_general.pdf';
+        url += `?type=general`;
       }
 
       const response = await fetch(url, { method: 'GET' });
-      
+
       if (!response.ok) {
-        let errMsg = 'No se pudo generar el plano.';
+        let errMsg = 'No se pudo generar el plano Excel.';
         try {
           const errData = await response.json();
           if (errData && errData.error) errMsg = errData.error;
@@ -1036,12 +1036,12 @@ const Home = () => {
                 <Row className="g-3 text-center">
                   <Col md={4}>
                     <label className="text-muted small fw-bold text-uppercase d-block mb-1">Confirma Fechas</label>
-                    <p className="fw-bold fs-5" style={getConfirmaFechasStyle(selectedEmployee.estado)}>
+                    <p className="fw-bold fs-6" style={getConfirmaFechasStyle(selectedEmployee.estado)}>
                       {selectedEmployee.estado === 'aprobado' ? 'Aprobado' : selectedEmployee.estado === 'rechazada' ? 'Rechazado' : 'Pendiente'}
                     </p>
                   </Col>
                   <Col md={4}>
-                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Día No Remunerado</label>
+                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Aplica licencia</label>
                     {(() => {
                       // Calcular saldo final para determinar si mostrar licencia no remunerada
                       const diasCorte = Number(selectedEmployee.dias_vacaciones_corteDic) || 0;
@@ -1054,14 +1054,14 @@ const Home = () => {
                       
                       // Si saldo final < 3, mostrar "licencia no remunerada" en rojo
                       if (saldoFinal < 3 && totalTomados > 0) {
-                        return <p className="fw-bold fs-5 text-danger">licencia no remunerada</p>;
+                        return <p className="fw-bold fs-6 text-danger">licencia no remunerada</p>;
                       }
-                      return <p className="fw-bold fs-5 text-warning">{selectedEmployee.diaNoRemunerado || 'No aplica'}</p>;
+                      return <p className="fw-bold fs-6 text-warning">{selectedEmployee.diaNoRemunerado || 'No aplica'}</p>;
                     })()}
                   </Col>
                   <Col md={4}>
-                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Aprobadas por</label>
-                    <p className="fw-bold fs-5 text-success">
+                    <label className="text-muted small fw-bold text-uppercase d-block mb-1">Aprobado por</label>
+                    <p className="fw-bold fs-6 text-success">
                       {selectedEmployee.th_asignacion 
                         ? `${selectedEmployee.th_asignacion}`
                         : (selectedEmployee.aprobadoPorGeovanny ? 'Aprobadas por Geovanny' : 'Pendiente de aprobación')}

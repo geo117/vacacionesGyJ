@@ -1301,6 +1301,239 @@ def exportar_reporte_pdf():
         return jsonify({'ok': False, 'error': str(e)}), 500
 
 
+def generar_plano_excel(rows_data, template_path, output_path):
+    """
+    Abre la plantilla Excel existente y escribe las filas generadas a partir de la fila 2 en adelante.
+    Preserva la fila de encabezados (fila 1) y el resto de columnas no especificadas.
+
+    Mapeo de columnas:
+      - Columna B: consecutivo numérico autoincremental.
+      - Columna C: identificación del empleado.
+      - Columna G: fecha de inicio (formato texto YYYYMMDD).
+      - Columna H: fecha de fin (formato texto YYYYMMDD).
+      - Columna I: días del periodo.
+    """
+    from openpyxl import load_workbook
+    from datetime import datetime
+
+    wb = load_workbook(template_path)
+    ws = wb.active
+
+    for idx, row in enumerate(rows_data):
+        excel_row = 2 + idx  # Comienza en fila 2 (fila 1 = encabezados)
+
+        ws.cell(row=excel_row, column=1, value=2)
+        
+        # Columna B: consecutivo
+        ws.cell(row=excel_row, column=2, value=idx + 1)
+
+        # Columna C: identificación
+        ws.cell(row=excel_row, column=3, value=row['identificacion'])
+        
+        ws.cell(row=excel_row, column=6, value=153)
+
+        # Columna G: fecha inicio (YYYYMMDD)
+        fecha_inicio = row.get('fecha_inicio')
+        if fecha_inicio:
+            ws.cell(row=excel_row, column=7, value=fecha_inicio)
+
+        # Columna H: fecha fin (YYYYMMDD)
+        fecha_fin = row.get('fecha_fin')
+        if fecha_fin:
+            ws.cell(row=excel_row, column=9, value=fecha_fin)
+
+        # Columna I: dias
+        ws.cell(row=excel_row, column=8, value=row['dias'])
+        
+        ws.cell(row=excel_row, column=10, value=0)        
+        ws.cell(row=excel_row, column=12, value=0)        
+        ws.cell(row=excel_row, column=19, value=0)
+        ws.cell(row=excel_row, column=20, value=0)
+        ws.cell(row=excel_row, column=21, value=0)
+        ws.cell(row=excel_row, column=23, value=0)
+        ws.cell(row=excel_row, column=24, value=0)
+        ws.cell(row=excel_row, column=25, value=1)
+
+    wb.save(output_path)
+
+
+@app.route('/generar_plano', methods=['GET', 'POST'])
+def generar_plano():
+    """
+    Genera el archivo plano de vacaciones en formato Excel.
+    Recibe la opción 'general' o 'unes' desde el frontend.
+    Si es por UNES, filtra la base de datos extrayendo los últimos 3 dígitos
+    del campo unes (ej: '2-106' -> '106').
+    """
+    import io
+    from datetime import datetime
+    from flask import send_file
+
+    try:
+        # Capturar parámetros: GET o POST
+        if request.method == 'POST':
+            data = request.get_json(silent=True) or {}
+            download_type = data.get('type', 'general')
+            unes_select = data.get('unes', None)
+        else:
+            download_type = request.args.get('type', default='general')
+            unes_select = request.args.get('unes', default=None)
+
+        conn = get_db_connection2()
+        if not conn:
+            return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+
+        try:
+            cursor = conn.cursor()
+
+            # Consulta base
+            query = """
+                SELECT
+                    vg.identificacion,
+                    vg.unes,
+                    vg.periodo1_fecha1,
+                    vg.periodo1_fecha2,
+                    vg.periodo1_dias1,
+                    vg.periodo2_fecha1,
+                    vg.periodo2_fecha2,
+                    vg.periodo2_dias2,
+                    vg.periodo3_fecha1,
+                    vg.periodo3_fecha2,
+                    vg.periodo3_dias3
+                FROM vacacionesgyj.dbo.inf_asignacion vg
+            """
+
+            # Filtro por UNES: extraer últimos 3 dígitos
+            if download_type == 'unes' and unes_select:
+                unes_digits = str(unes_select)[-3:]
+                query += " WHERE RIGHT(CAST(ISNULL(unes, '') AS VARCHAR(50)), 3) = ?"
+                cursor.execute(query, (unes_digits,))
+            else:
+                cursor.execute(query)
+
+            rows = cursor.fetchall()
+            columns = [col[0] for col in (cursor.description or [])]
+
+            def format_date_to_yyyymmdd(val):
+                """Formatea una fecha a string YYYYMMDD."""
+                if val is None or val == '':
+                    return None
+                try:
+                    if hasattr(val, 'strftime'):
+                        return val.strftime('%Y%m%d')
+                    s = str(val)
+                    # Intentar parsear común formats
+                    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%Y-%m-%dT%H:%M:%S'):
+                        try:
+                            return datetime.strptime(s.split('.')[0].strip(), fmt).strftime('%Y%m%d')
+                        except ValueError:
+                            continue
+                    # Si ya está en formato YYYYMMDD, devolverlo
+                    if len(s) == 8 and s.isdigit():
+                        return s
+                    return None
+                except Exception:
+                    return None
+
+            def safe_int(val):
+                """Convierte a int, manejando None y decimal.Decimal."""
+                if val is None or val == '':
+                    return 0
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    try:
+                        return int(float(val))
+                    except (ValueError, TypeError):
+                        return 0
+
+            # Construir rows_data según la regla de desglose por periodos
+            rows_data = []
+
+            for row in rows:
+                emp = dict(zip(columns, row))
+                identificacion = emp.get('identificacion')
+
+                # Periodo 1
+                p1_fecha1 = emp.get('periodo1_fecha1')
+                p1_fecha2 = emp.get('periodo1_fecha2')
+                p1_dias = emp.get('periodo1_dias1')
+
+                if p1_fecha1 and p1_fecha2:
+                    rows_data.append({
+                        'identificacion': identificacion,
+                        'fecha_inicio': format_date_to_yyyymmdd(p1_fecha1),
+                        'fecha_fin': format_date_to_yyyymmdd(p1_fecha2),
+                        'dias': safe_int(p1_dias)
+                    })
+
+                # Periodo 2
+                p2_fecha1 = emp.get('periodo2_fecha1')
+                p2_fecha2 = emp.get('periodo2_fecha2')
+                p2_dias = emp.get('periodo2_dias2')
+
+                if p2_fecha1 and p2_fecha2:
+                    rows_data.append({
+                        'identificacion': identificacion,
+                        'fecha_inicio': format_date_to_yyyymmdd(p2_fecha1),
+                        'fecha_fin': format_date_to_yyyymmdd(p2_fecha2),
+                        'dias': safe_int(p2_dias)
+                    })
+
+                # Periodo 3
+                p3_fecha1 = emp.get('periodo3_fecha1')
+                p3_fecha2 = emp.get('periodo3_fecha2')
+                p3_dias = emp.get('periodo3_dias3')
+
+                if p3_fecha1 and p3_fecha2:
+                    rows_data.append({
+                        'identificacion': identificacion,
+                        'fecha_inicio': format_date_to_yyyymmdd(p3_fecha1),
+                        'fecha_fin': format_date_to_yyyymmdd(p3_fecha2),
+                        'dias': safe_int(p3_dias)
+                    })
+
+            cursor.close()
+            conn.close()
+
+            # Ruta de la plantilla
+            import os
+            template_path = os.path.join(os.path.dirname(__file__), 'planos_unoee', 'ARCHIVO PLANO TNL-VACACIONES.xlsx')
+
+            if not os.path.exists(template_path):
+                return jsonify({'ok': False, 'error': 'Plantilla Excel no encontrada'}), 500
+
+            # Generar archivo temporal
+            output_path = os.path.join(os.path.dirname(__file__), 'planos_unoee', 'plano_generado.xlsx')
+            generar_plano_excel(rows_data, template_path, output_path)
+
+            # Nombre del archivo
+            if download_type == 'unes' and unes_select:
+                unes_part = str(unes_select)
+                filename = f"plano_vacaciones_unes_{unes_part}.xlsx"
+            else:
+                filename = 'plano_vacaciones_general.xlsx'
+
+            # Retornar archivo
+            return send_file(
+                output_path,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=filename
+            )
+
+        except Exception as e:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            print(f"Error en generar_plano: {e}")
+            return jsonify({'ok': False, 'error': str(e)}), 500
+    except Exception as e:
+        print(f"Error en generar_plano: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     port = int(os.getenv('PORT2', 5000))
     debug2 = os.getenv('DEBUG2', 'True') == 'True'

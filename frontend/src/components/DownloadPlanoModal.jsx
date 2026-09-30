@@ -137,7 +137,7 @@ const DownloadPlanoModal = ({ show, onHide, uniqueUnes, selectedUnes, onDownload
                 <path d="M5.255 5.786a.75.75 0 0 1 1.06 1.06L6.31 10.44h3.38a.75.75 0 0 1 0 1.5H6.31l-2.005 3.59a.75.75 0 1 1-1.06-1.06l1.97-3.53H5.12a.75.75 0 0 1 0-1.5h3.39l-1.97-3.53a.75.75 0 0 1 .79-.786z"/>
               </svg>
               <span className="small">
-                <strong>Nota:</strong> El plano se generará en formato PDF con la información actualizada de vacaciones.
+                <strong>Nota:</strong> El plano se generará en formato Excel con la información actualizada de vacaciones.
               </span>
             </div>
           </div>

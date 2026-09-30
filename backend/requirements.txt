@@ -4,3 +4,4 @@ python-dotenv
 pyodbc
 reportlab
 flask-socketio
+openpyxl

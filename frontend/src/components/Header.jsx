@@ -14,7 +14,7 @@ const Header = () => {
   const API_URL = 'http://127.0.0.1:5000';
 
   const talentohumano = [
-    'talentohumano@gyj.com.co', 'direccion_th@gyj.com.co'
+    'talentohumano@gyj.com.co', 'direccion_th@gyj.com.co', 'auxiliar.nomina@gyj.com.co'
   ];
   const isTalentoHumano = talentohumano.map(e => e.toLowerCase()).includes(userEmail);
 
@@ -72,13 +72,15 @@ const Header = () => {
         <Navbar.Collapse id="basic-navbar-nav" className="justify-content-end">
           <Nav className="align-items-center">
 
-            <Button
-              variant="link"
-              className="text-white ms-2 p-0 d-inline-flex align-items-center gap-2 admin-btn text-decoration-none"
-              onClick={() => navigate('/adminstrador')}
-            >
-              <FaUser /> Administrador
-            </Button>
+            {isTalentoHumano && (
+              <Button
+                variant="link"
+                className="text-white ms-2 p-0 d-inline-flex align-items-center gap-2 admin-btn text-decoration-none"
+                onClick={() => navigate('/adminstrador')}
+              >
+                <FaUser /> Administrador
+              </Button>
+            )}
 
             <Dropdown onToggle={handleToggle} align="end" className="notification-dropdown ms-3">
               <Dropdown.Toggle
