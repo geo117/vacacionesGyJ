@@ -77,7 +77,8 @@ const Home = () => {
   const talentohumano = [
     {'correo':'talentohumano@gyj.com.co', 'nombre': 'Jessica Alexandra Diaz'},
     {'correo':'direccion_th@gyj.com.co', 'nombre': 'Carolina Rivera Vargas'},
-    {'correo':'auxiliar.nomina@gyj.com.co', 'nombre': 'Kerrin Yesenia Collazos'}
+    {'correo':'auxiliar.nomina@gyj.com.co', 'nombre': 'Kerrin Yesenia Collazos'},
+    {'correo':'asistente.nomina@gyj.com.co', 'nombre': 'Heidy Patricia Roca'}
   ];
 
   const calculateDays = (start, end) => {

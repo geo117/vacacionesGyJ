@@ -88,6 +88,30 @@ CREATE TABLE notificaciones (
 GO
 
 -- =========================================================
+-- TABLA: users
+-- =========================================================
+CREATE TABLE users (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+
+    Nombres VARCHAR(200) NOT NULL,
+
+    correo VARCHAR(200) NOT NULL,
+
+    cargo VARCHAR(200) NULL,
+
+    password VARCHAR(200) NOT NULL,
+
+    unes VARCHAR(50) NULL,
+
+    Activo BIT NOT NULL DEFAULT 1,
+
+    FechaCreacion DATETIME NOT NULL DEFAULT GETDATE(),
+
+    fecha_update DATETIME NULL
+);
+GO
+
+-- =========================================================
 -- ÍNDICES
 -- =========================================================
 

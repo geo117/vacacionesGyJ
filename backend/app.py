@@ -1,11 +1,13 @@
 import os
 import io
+import secrets
 from datetime import datetime
 import pyodbc
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from dotenv import load_dotenv
+from werkzeug.security import generate_password_hash, check_password_hash
 
 # Cargar variables de entorno
 load_dotenv()
@@ -195,6 +197,373 @@ def marcar_notificaciones_leidas():
     except Exception as e:
         print(f"Error al marcar notificaciones leídas: {e}")
         return jsonify({'ok': False, 'error': str(e)}), 500
+
+@app.route('/usuarios_nuevos', methods=['POST'])
+def usuarios_nuevos():
+    """Registra un nuevo usuario en vacacionesgyj.dbo.users."""
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    try:
+        data = request.get_json(silent=True) or {}
+
+        nombre = (data.get('nombre') or '').strip()
+        correo = (data.get('correo') or '').strip()
+        cargo = data.get('cargo')
+        password = data.get('password')
+        unes = data.get('unes')
+        activo = data.get('activo', True)
+
+        if not nombre or not correo:
+            return jsonify({'ok': False, 'error': 'El nombre y el correo son obligatorios'}), 400
+
+        cursor = conn.cursor()
+
+        # Evitar duplicados por correo
+        cursor.execute("SELECT 1 FROM users WHERE correo = ?", (correo,))
+        if cursor.fetchone():
+            cursor.close()
+            return jsonify({'ok': False, 'error': 'Ya existe un usuario con ese correo'}), 409
+
+        # Generar hash seguro para la contraseña
+        password_hash = generate_password_hash(password) if password else None
+
+        cursor.execute("""
+            INSERT INTO users (Nombres, correo, cargo, password, unes, Activo, FechaCreacion)
+            VALUES (?, ?, ?, ?, ?, ?, GETDATE())
+        """, (nombre, correo, cargo, password_hash, unes, 1 if activo else 0))
+
+        conn.commit()
+        cursor.close()
+        return jsonify({'ok': True, 'message': 'Usuario registrado correctamente'}), 200
+    except Exception as e:
+        print(f"Error en usuarios_nuevos: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+def es_password_hash(valor):
+    """
+    Detecta si un valor almacenado en users.password es un hash unidireccional
+    (werkzeug pbkdf2/scrypt/argon2 o bcrypt) en lugar de texto plano.
+    """
+    if valor is None:
+        return False
+    v = str(valor).strip().lower()
+    if not v:
+        return False
+    prefijos_hash = ('pbkdf2:', 'scrypt:', 'argon2', 'pbkdf2-sha256$', '$2a$', '$2b$', '$2y$')
+    return v.startswith(prefijos_hash)
+
+
+@app.route('/get_usuario_password/<int:id>', methods=['GET'])
+def get_usuario_password(id):
+    """
+    Devuelve la contraseña en texto plano SOLO si el registro no está hasheado.
+
+    Si users.password contiene un hash unidireccional (pbkdf2/bcrypt/argon2) el
+    valor original es matemáticamente irrecuperable, por lo que se responde con
+    has_password=True, password_is_hashed=True y password=None. Nunca se
+    devuelve la cadena del hash.
+    """
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT password FROM users WHERE id = ?", (id,))
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'ok': False, 'error': 'Usuario no encontrado'}), 404
+
+        stored = row[0] or ''
+        hashed = es_password_hash(stored)
+
+        return jsonify({
+            'ok': True,
+            'has_password': bool(str(stored).strip()),
+            'password_is_hashed': hashed,
+            # None cuando es hash: no hay forma de recuperar el original.
+            'password': None if hashed else str(stored),
+        }), 200
+    except Exception as e:
+        print(f"Error en get_usuario_password: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/login', methods=['POST'])
+def login():
+    """
+    Valida las credenciales contra vacacionesgyj.dbo.users.
+
+    La comparación se hace SIEMPRE en el backend con check_password_hash, de modo
+    que el hash nunca viaja al navegador. Se soporta tambien el caso legado de
+    usuarios cuya contraseña quedó guardada en texto plano.
+    """
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    try:
+        payload = request.get_json(silent=True) or {}
+        correo = (payload.get('correo') or '').strip().lower()
+        password = payload.get('password') or ''
+        unes_ingresada = (payload.get('unes') or '').strip()
+
+        if not correo or not password:
+            return jsonify({'ok': False, 'error': 'Correo y contraseña son obligatorios'}), 400
+
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT id, Nombres, correo, unes, password, cargo, Activo FROM users WHERE LOWER(correo) = ?",
+            (correo,)
+        )
+        row = cursor.fetchone()
+
+        if not row:
+            # Respuesta generica para no enumerar correos validos.
+            return jsonify({'ok': False, 'error': 'Credenciales inválidas'}), 401
+
+        usuario = {
+            'id': row[0],
+            'nombre': row[1] or '',
+            'correo': row[2] or '',
+            'unes': (row[3] or ''),
+            'password': row[4] or '',
+            'cargo': row[5] or '',
+            'Activo': bool(row[6]) if row[6] is not None else False,
+        }
+
+        if not usuario['Activo']:
+            return jsonify({'ok': False, 'error': 'Usuario inactivo. Contacte al administrador.'}), 403
+
+        stored = usuario['password']
+        if es_password_hash(stored):
+            password_valida = check_password_hash(stored, password)
+        else:
+            # Comparacion en tiempo constante tambien para el caso legado.
+            password_valida = secrets.compare_digest(str(stored), str(password))
+
+        if not password_valida:
+            return jsonify({'ok': False, 'error': 'Credenciales inválidas'}), 401
+
+        unes_usuario = str(usuario['unes']).strip()
+        if unes_ingresada and unes_usuario:
+            if not (unes_usuario.endswith(unes_ingresada) or unes_usuario == unes_ingresada):
+                return jsonify({'ok': False, 'error': 'La UNES no corresponde al usuario.'}), 401
+
+        # No se devuelve password: solo lo minimo necesario para la sesion.
+        return jsonify({
+            'ok': True,
+            'user': {
+                'nombre': usuario['nombre'],
+                'correo': usuario['correo'],
+                'unes': unes_usuario,
+            }
+        }), 200
+    except Exception as e:
+        print(f"Error en login: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/get_usuarios', methods=['GET'])
+def get_usuarios():
+    """
+    Devuelve los usuarios registrados en vacacionesgyj.dbo.users.
+
+    IMPORTANTE: nunca se expone el valor de users.password. Solo se informa
+    si el usuario tiene contraseña asignada mediante el flag 'has_password'.
+    """
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT
+                id,
+                Nombres,
+                correo,
+                unes,
+                password,
+                cargo,
+                Activo,
+                FechaCreacion
+            FROM users
+            ORDER BY id DESC
+        """)
+        rows = cursor.fetchall()
+        columns = [col[0] for col in (cursor.description or [])]
+
+        def fmt_date(val):
+            if val is None:
+                return ''
+            try:
+                return val.strftime('%Y-%m-%d %H:%M:%S')
+            except AttributeError:
+                return str(val)[:19]
+
+        data = []
+        for row in rows:
+            item = dict(zip(columns, row))
+            raw_password = item.get('password') or ''
+            data.append({
+                'id': item.get('id'),
+                'name': item.get('Nombres') or '',
+                'email': item.get('correo') or '',
+                'unes': item.get('unes') or '',
+                # Nunca se envía el hash ni la contraseña al frontend.
+                # Solo el flag booleano para que la UI sepa si hay valor.
+                'has_password': bool(str(raw_password).strip()),
+                'password_is_hashed': es_password_hash(raw_password),
+                'cargo': item.get('cargo') or '',
+                'Activo': bool(item.get('Activo')) if item.get('Activo') is not None else False,
+                'FechaCreacion': fmt_date(item.get('FechaCreacion')),
+            })
+        cursor.close()
+        conn.close()
+        return jsonify({'ok': True, 'data': data}), 200
+    except Exception as e:
+        print(f"Error en get_usuarios: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@app.route('/update_usuario/<int:id>', methods=['PUT', 'POST'])
+def update_usuario(id):
+    """Actualiza un usuario existente en vacacionesgyj.dbo.users."""
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    
+    try:
+        payload = request.get_json(silent=True) or {}
+        
+        nombre = payload.get('nombre')
+        correo = payload.get('correo')
+        cargo = payload.get('cargo')
+        unes = payload.get('unes')
+        password = payload.get('password')
+        activo = payload.get('activo', True)
+        
+        if not nombre or not correo:
+            return jsonify({'ok': False, 'error': 'El nombre y el correo son obligatorios'}), 400
+        
+        cursor = conn.cursor()
+        
+        # Verificar si el usuario existe
+        cursor.execute("SELECT 1 FROM users WHERE id = ?", (id,))
+        if not cursor.fetchone():
+            cursor.close()
+            return jsonify({'ok': False, 'error': 'Usuario no encontrado'}), 404
+        
+        # Verificar si ya existe otro usuario con el mismo correo (excluyendo el actual)
+        cursor.execute("SELECT 1 FROM users WHERE correo = ? AND id != ?", (correo, id))
+        if cursor.fetchone():
+            cursor.close()
+            return jsonify({'ok': False, 'error': 'Ya existe un usuario con ese correo'}), 409
+        
+        # Generar hash de contraseña si se proporcionó una nueva
+        password_hash = None
+        if password:
+            password_hash = generate_password_hash(password)
+        
+        # Construir query de actualización dinámicamente
+        update_fields = []
+        update_values = []
+        
+        if nombre:
+            update_fields.append("Nombres = ?")
+            update_values.append(nombre)
+        
+        if correo:
+            update_fields.append("correo = ?")
+            update_values.append(correo)
+        
+        if cargo is not None:
+            update_fields.append("cargo = ?")
+            update_values.append(cargo)
+        
+        if unes is not None:
+            update_fields.append("unes = ?")
+            update_values.append(unes)
+        
+        if password_hash:
+            update_fields.append("password = ?")
+            update_values.append(password_hash)
+        
+        if activo is not None:
+            update_fields.append("Activo = ?")
+            update_values.append(1 if activo else 0)
+        
+        if not update_fields or len(update_fields) == 0:
+            cursor.close()
+            return jsonify({'ok': False, 'error': 'No hay campos para actualizar'}), 400
+        
+        # Agregar ID al final de los valores
+        update_values.append(id)
+        
+        query = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ?"
+        
+        cursor.execute(query, update_values)
+        conn.commit()
+        cursor.close()
+        
+        return jsonify({'ok': True, 'message': 'Usuario actualizado correctamente'}), 200
+    except Exception as e:
+        print(f"Error en update_usuario: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+@app.route('/delete_usuario/<int:id>', methods=['DELETE'])
+def delete_usuario(id):
+    """Elimina un usuario de vacacionesgyj.dbo.users."""
+    conn = get_db_connection2()
+    if not conn:
+        return jsonify({'ok': False, 'error': 'No se pudo conectar a vacacionesgyj'}), 500
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Verificar si el usuario existe antes de eliminarlo
+        cursor.execute("SELECT 1 FROM users WHERE id = ?", (id,))
+        if not cursor.fetchone():
+            cursor.close()
+            return jsonify({'ok': False, 'error': 'Usuario no encontrado'}), 404
+        
+        # Eliminar el usuario
+        cursor.execute("DELETE FROM users WHERE id = ?", (id,))
+        conn.commit()
+        cursor.close()
+        
+        return jsonify({'ok': True, 'message': 'Usuario eliminado correctamente'}), 200
+    except Exception as e:
+        print(f"Error en delete_usuario: {e}")
+        return jsonify({'ok': False, 'error': str(e)}), 500
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 @app.route('/pbi-colaborador-vacaciones', methods=['GET'])
 def get_pbi_colaborador_vacaciones():
@@ -1204,8 +1573,11 @@ def exportar_reporte_pdf():
             try:
                 cursor2 = conn2.cursor()
                 if unes_filter:
-                    unes_full = unes_filter if 'unes_filter' in locals() and unes_filter else unes_filter
-                    unes_full = unes_filter if unes_filter.lower().startswith('2-') else f"2-{unes_filter}"
+                    # Remove leading '2-' if present, then add it back
+                    if unes_filter.lower().startswith('2-'):
+                        unes_full = unes_filter  # Already has 2- prefix
+                    else:
+                        unes_full = f"2-{unes_filter}"
                     cursor2.execute("SELECT * FROM inf_asignacion WHERE unes = ?", (unes_full,))
                 else:
                     cursor2.execute("SELECT * FROM inf_asignacion")
@@ -1355,7 +1727,6 @@ def generar_plano_excel(rows_data, template_path, output_path):
         ws.cell(row=excel_row, column=25, value=1)
 
     wb.save(output_path)
-
 
 @app.route('/generar_plano', methods=['GET', 'POST'])
 def generar_plano():

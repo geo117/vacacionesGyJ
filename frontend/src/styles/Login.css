@@ -65,6 +65,29 @@
   margin-bottom: 30px;
 }
 
+/* Alinear visualmente los inputs del Login en fila UNES + contraseña */
+.login-unes-wrapper .form-control,
+.login-password-wrapper .form-control {
+  height: 42px;
+}
+
+/* Mantener los estilos glass consistentes en los inputs inline */
+.auth-container .login-unes-wrapper .form-control,
+.auth-container .login-password-wrapper .form-control {
+  background: rgba(255, 255, 255, 0.05) !important;
+  border: 1px solid var(--glass-border) !important;
+  color: white !important;
+  border-radius: 10px !important;
+  padding: 12px 15px !important;
+}
+
+.auth-container .login-unes-wrapper .form-control:focus,
+.auth-container .login-password-wrapper .form-control:focus {
+  background: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 0 0 0.25rem rgba(255, 204, 0, 0.25) !important;
+  border-color: var(--accent-color) !important;
+}
+
 .logo-container h2 {
   font-weight: 800;
   letter-spacing: 1px;

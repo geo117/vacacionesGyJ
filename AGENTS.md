@@ -1,55 +1,61 @@
 # AGENTS.md — vacacionesGyJ
 
-G&J Vacaciones: a Spanish corporate vacation-management intranet. Two stacks that talk over HTTP + Socket.io on `127.0.0.1:5000`.
+G&J Vacaciones: Spanish corporate vacation-management intranet. Two stacks connected via HTTP + Socket.io on `127.0.0.1:5000`.
 
-## Layout
+## Architecture & Layout
 
-- `frontend/` — React 19 + Vite 8 SPA (JS/JSX only, **no TypeScript**, no tests).
-- `backend/` — Flask + Flask-SocketIO single-file app (`app.py`, ~1300 lines). SQL Server via `pyodbc`.
-- `guias/areas_106.txt` — list of UNES area names (used for `desc_unes`).
-- `backend/estructura.txt` / `backend/tablas_modificar.txt` — hand-written schema docs (see quirks below).
+- `frontend/` — React 19 + Vite 8 SPA (JS/JSX only, **no TypeScript**, no automated tests).
+- `backend/` — Flask + Flask-SocketIO single-file monolith (`app.py`, ~1900 lines). Connected to two SQL Server instances via `pyodbc`.
+- `backend/planos_unoee/` — Contains Excel template (`ARCHIVO PLANO TNL-VACACIONES.xlsx`) for generating flat files.
+- `backend/plantilla_doc/plantilla.md` — PDF generation specification doc for ReportLab export.
+- `guias/instrucciones.md` — Requirements and technical specification for `generar_plano` endpoint.
 
-## Backend (`backend/`)
+## Commands
 
+### Backend (`backend/`)
 ```bash
 cd backend
-pip install -r requirements.txt     # flask, flask-cors, flask-socketio, pyodbc, python-dotenv, reportlab
-python app.py                        # starts on 127.0.0.1:5000
+pip install -r requirements.txt
+python app.py  # Runs on 127.0.0.1:5000 via socketio.run
 ```
 
-- **`.env` is mandatory.** Required keys (missing → connection returns `None` → endpoints 500):
-  - `DB_SERVER`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_DRIVER` → BD_Integraciones (read-only source of truth, table `PBI_Colaborador_Vacaciones`)
-  - `DB_SERVER2`, `DB_NAME2`, `DB_USER2`, `DB_PASSWORD2`, `DB_DRIVER2` → `vacacionesgyj` (write DB, tables `inf_asignacion`, `notificaciones`)
-  - `PORT2` (default 5000), `DEBUG2` (default `True`)
-- `load_dotenv()` runs at import; env vars are read at module load, so a running server needs a restart after `.env` changes.
-- App entry is `if __name__ == '__main__'` — it will **not** start under plain `flask run`.
-- Key endpoints: `GET /pbi-colaborador-vacaciones[?unes=&limit=]`, `POST /registrar_data`, `GET /ver_data/<id>`, `PUT /actualizar_data/<id>`, `GET /obtener_data/<unes>`, `POST /marcar_notificaciones_leidas`, `GET|POST /exportar_reporte_pdf`.
-- Socket.io events: `approve_request`, `reject_request`, `assign_dates`, `request_notifications`. Notifications are persisted to `notificaciones` **and** emitted in real time.
-- PDF export uses **reportlab** (not WeasyPrint — `plantilla.md`'s reference code is aspirational): A4 landscape, 6 mm margins, 23 fixed columns, green `#00B050` / blue `#0070C0` super-headers. Filename is `2-{unes}_vacaciones.pdf`.
-
-## Frontend (`frontend/`)
-
+### Frontend (`frontend/`)
 ```bash
 cd frontend
 npm install
-npm run dev     # vite dev server
-npm run build   # -> dist/
-npm run lint    # eslint .  (only linter; no typecheck, no tests)
+npm run dev    # Vite dev server
+npm run build  # Production build to dist/
+npm run lint   # ESLint checks (runs eslint .)
 ```
 
-- Vite config wires the React plugin **plus** `@rolldown/plugin-babel` with the React-Compiler preset — the compiler is on, so hooks rules are enforced by `eslint-plugin-react-hooks`.
-- API base URL is **hardcoded** to `http://127.0.0.1:5000` in `src/views/Login.jsx` and `src/views/Home.jsx`. The Socket.io client (`src/services/socket.js`) honors `VITE_SOCKET_URL` and falls back to the same URL.
-- Routes: `/` (Login), `/home` (Home), and `/adminstrador` (Admin view). Header hides on `/`.
-- Login logic: email + UNES (exactly 3 digits). Three hardcoded Talento Humano emails (`talentohumano@gyj.com.co`, `direccion_th@gyj.com.co`, `auxiliar.nomina@gyj.com.co`) skip the UNES check. Other users' UNES is validated against the backend with a 5 s timeout + 350 ms debounce; result is cached 5 min.
-- State is only `localStorage` (`userUnes`, `userEmail`) — no auth tokens, no router guards.
-- `src/components/Header.jsx` renders the global navbar. The **logo** is clickable and routes to `/home`. The **Administrador** button (`variant="link"`, borderless, class `admin-btn`) routes to `/adminstrador`. The notification bell dropdown honors `isTalentoHumano` to filter by UNES.
-- `src/components/NuevoUsuarioModal.jsx` is a demo-only "Nuevo Usuario" modal (fields: nombre, correo, cargo, password, UNES). It does **not** talk to the backend — data is discarded on close.
-- `src/views/adminstrador.jsx` is the admin view: Section 1 holds the **Nuevo Usuario** button (right-aligned); Section 2 is a two-column layout — left lists registered users (demo data, no DB), right shows the selected user's details (nombre, email, cargo, UNES, password). A **Regresar** button sits to the right of "Nuevo Usuario" and calls `window.history.back()`.
+## Critical Operational Quirks & Database Rules
 
-## Cross-cutting quirks
+### Dual Database Setup
+`.env` file in `backend/` is **mandatory**. Missing variables cause connection functions to return `None`, leading to HTTP 500 errors.
+- `DB_SERVER`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_DRIVER` → Read-only source of truth (`BD_Integraciones`, table `PBI_Colaborador_Vacaciones`).
+- `DB_SERVER2`, `DB_NAME2`, `DB_USER2`, `DB_PASSWORD2`, `DB_DRIVER2` → Write DB (`vacacionesgyj`, tables `inf_asignacion`, `notificaciones`, `users`).
+- Env vars are evaluated at module load time; server must be restarted after editing `.env`.
+- Flask entry point uses `socketio.run(app, ...)` under `if __name__ == '__main__'`; do not run with plain `flask run`.
 
-- **UNES** is a 3-digit area code; the write DB stores it as `2-{unes}` (e.g. `2-106`). The read DB (`PBI_Colaborador_Vacaciones`) stores the last 3 chars of `IDCia_CO`. Don't conflate the two formats.
-- Schema docs are stale/inconsistent: `estructura.txt` omits `th_asignacion` (added later) and says `fecha_regreso` is `NOT NULL`, while `tablas_modificar.txt` says it allows NULL. Trust `app.py` — it always supplies a value.
-- `inf_asignacion` has an identity `id` PK, but the app queries/merges on `identificacion` and `unes` (indexes `IX_inf_asignacion_identificacion` / `IX_inf_asignacion_unes` exist).
-- `errores.txt` is empty and appears to be a scratch file, not a spec.
-- No CI, no `.gitignore`, no tests anywhere. `backend/__pycache__` is committed-able — add it to `.gitignore` before sharing.
+### UNES Identifier Formats
+- Read DB (`PBI_Colaborador_Vacaciones`): UNES is stored in `IDCia_CO` (queried by last 3 digits, e.g. `106`).
+- Write DB (`inf_asignacion`): UNES is stored prefixed as `2-{unes}` (e.g. `2-106`).
+- Always keep these two representations distinct when filtering or writing records.
+
+### Authentication & Users
+- Authentication validates against `vacacionesgyj.dbo.users`.
+- Passwords use Werkzeug hashes (`generate_password_hash`/`check_password_hash`). Legacy plain text passwords are supported via `secrets.compare_digest`.
+- API responses omit raw password hashes for security (`has_password` and `password_is_hashed` flags are sent instead).
+- Hardcoded Talento Humano emails (`TALENTO_HUMANO_USERS` in `frontend/src/constants/talentohumano.js`) can bypass UNES checks during login or act as admins.
+
+### Key Endpoints
+- `GET /pbi-colaborador-vacaciones?unes=XXX` — Validates UNES existence or lists employees merged with `inf_asignacion`.
+- `POST /registrar_data` / `PUT /actualizar_data/<identificacion>` — Inserts/updates vacation assignments in `inf_asignacion`.
+- `POST /usuarios_nuevos` / `GET /get_usuarios` / `PUT /update_usuario/<id>` / `DELETE /delete_usuario/<id>` — User management.
+- `POST /exportar_reporte_pdf` — Generates ReportLab PDF (`2-{unes}_vacaciones.pdf`).
+- `POST /generar_plano` — Generates Excel flat file (`.xlsx`) using `openpyxl` from template `planos_unoee/ARCHIVO PLANO TNL-VACACIONES.xlsx`.
+- Socket.io events: `approve_request`, `reject_request`, `assign_dates`, `request_notifications` (persisted to `notificaciones` DB).
+
+### Repositories & Build Quirks
+- `@rolldown/plugin-babel` with React Compiler preset is used in `vite.config.js`; ESLint enforces React Hooks rules strictly.
+- Backend contains a committed `__pycache__` directory and generated files in `planos_unoee/`; ensure new scratch files or temporary build artifacts are handled carefully or ignored.
