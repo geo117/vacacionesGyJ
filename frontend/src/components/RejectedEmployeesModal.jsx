@@ -2,7 +2,9 @@ import { Modal, Table, Button } from 'react-bootstrap';
 import { FaTimesCircle, FaTimes } from 'react-icons/fa';
 
 const RejectedEmployeesModal = ({ show, onHide, employees, onViewEmployee }) => {
-  const rejected = (employees || []).filter(emp => emp.estado === 'rechazada');
+  const rejected = (employees || []).filter(emp =>
+    emp.estado === 'no aprobado' || emp.estado === 'rechazada' || emp.estado === 'rechazado'
+  );
 
   return (
     <Modal show={show} onHide={onHide} centered size="xl" scrollable>

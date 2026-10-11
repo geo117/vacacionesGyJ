@@ -1,5 +1,6 @@
 import os
 import io
+import json
 import secrets
 from datetime import datetime
 import pyodbc
@@ -565,18 +566,92 @@ def delete_usuario(id):
         except Exception:
             pass
 
+# Ruta del archivo que mapea cada correo (jefe de filial) con las cédulas de su equipo.
+FILIAL_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data filial', 'filial.json')
+
+
+def normalizar_cedula(valor):
+    """Normaliza una cédula a texto sin decimales ni espacios para poder compararlas."""
+    if valor is None:
+        return ''
+    texto = str(valor).strip()
+    if '.' in texto:
+        texto = texto.split('.')[0]
+    return texto.strip()
+
+
+def obtener_cedulas_filial(correo):
+    """
+    Lee 'backend/data filial/filial.json' y devuelve el conjunto de cédulas (texto)
+    asociadas al correo consultado.
+
+    Retorna:
+        - set con las cédulas permitidas cuando el correo existe en el JSON.
+        - None cuando el correo no está en el JSON o no se pudo leer el archivo
+          (en ese caso el endpoint NO aplica filtro para no romper la vista).
+    """
+    if not correo:
+        return None
+    try:
+        if not os.path.isfile(FILIAL_JSON_PATH):
+            print(f"filial.json no encontrado en: {FILIAL_JSON_PATH}")
+            return None
+
+        with open(FILIAL_JSON_PATH, 'r', encoding='utf-8') as archivo:
+            filial_data = json.load(archivo)
+
+        if not isinstance(filial_data, dict):
+            print("filial.json no tiene la estructura esperada (diccionario).")
+            return None
+
+        correo_key = str(correo).strip().lower()
+        registros = None
+        for llave, valor in filial_data.items():
+            if str(llave).strip().lower() == correo_key:
+                registros = valor
+                break
+
+        if registros is None:
+            print(f"Correo {correo_key} no encontrado en filial.json")
+            return None
+
+        cedulas = set()
+        for item in registros or []:
+            if isinstance(item, dict):
+                cedula = normalizar_cedula(item.get('cedula'))
+            else:
+                cedula = normalizar_cedula(item)
+            if cedula:
+                cedulas.add(cedula)
+        return cedulas
+    except Exception as e:
+        print(f"Error leyendo filial.json: {e}")
+        return None
+
+
 @app.route('/pbi-colaborador-vacaciones', methods=['GET'])
 def get_pbi_colaborador_vacaciones():
-    """Devuelve la información de BD_Integraciones.dbo.PBI_Colaborador_Vacaciones como API, fusionada con inf_asignacion."""
+    """Devuelve la información de BD_Integraciones.dbo.PBI_Colaborador_Vacaciones como API, fusionada con inf_asignacion.
+
+    Parámetros opcionales de la petición:
+        - unes: código UNES de 3 dígitos. Si se envía sin 'correo', se usa para
+          validar su existencia (flujo de Login).
+        - correo: correo del usuario logueado. Cuando UNES = 106, se usa para
+          filtrar la lista por las cédulas de su filial definidas en filial.json.
+    """
 
     unes_query = request.args.get('unes', default=None, type=str)
+    correo_query = (request.args.get('correo', default=None, type=str) or '').strip()
 
     conn1 = get_db_connection()
     if not conn1:
         return jsonify({'ok': False, 'error': 'No se pudo conectar a BD_Integraciones'}), 500
 
     try:
-        if unes_query is not None:
+        # Validación de existencia de UNES (flujo de Login: solo envía 'unes').
+        # Cuando llega 'correo', la petición corresponde al listado de Home y no debe
+        # caer en esta rama, para poder devolver el arreglo completo/filtrado.
+        if unes_query is not None and not correo_query:
             if not unes_query.isdigit():
                 return jsonify({'ok': False, 'error': 'La UNES debe contener solo números'}), 400
             if len(unes_query) != 3:
@@ -705,6 +780,17 @@ def get_pbi_colaborador_vacaciones():
                     {'inicio': '', 'fin': '', 'dias': 0},
                     {'inicio': '', 'fin': '', 'dias': 0}
                 ]
+
+        # 4. Filtrado por filial (solo aplica cuando UNES = 106 y se recibió el correo).
+        unes_normalizada = ''.join(ch for ch in str(unes_query or '') if ch.isdigit())[-3:] if unes_query else ''
+        if unes_normalizada == '106' and correo_query:
+            cedulas_permitidas = obtener_cedulas_filial(correo_query)
+            if cedulas_permitidas is not None:
+                data = [
+                    emp for emp in data
+                    if normalizar_cedula(emp.get('cedula')) in cedulas_permitidas
+                ]
+                print(f"Filtro filial aplicado para {correo_query}: {len(data)} colaboradores")
 
         return jsonify({'ok': True, 'count': len(data), 'data': data}), 200
     except Exception as e:
@@ -1093,6 +1179,119 @@ def actualizar_data(identificacion):
             conn.close()
         except Exception:
             pass
+
+# Estados de asignación gestionados desde la vista Home.
+ESTADO_APROBADO = 'aprobado'
+ESTADO_NO_APROBADO = 'no aprobado'
+
+
+def aprobar_rechazar_asignacion(identificacion, estado, motivo_rechazo=None, th_asignacion=None):
+    """
+    Actualiza el estado de una asignación en vacacionesgyj.dbo.inf_asignacion.
+
+    - 'aprobado'    -> al pulsar Aprobar en la vista Home.
+    - 'no aprobado' -> al pulsar Rechazar; guarda además el motivo del rechazo
+      en la columna motivo_rechazo.
+
+    Solo modifica estado_asignacion, motivo_rechazo, th_asignacion y fecha_update,
+    de modo que NO sobrescribe las fechas ni los días ya asignados.
+
+    Devuelve una tupla (ok: bool, mensaje: str).
+    """
+    if estado not in (ESTADO_APROBADO, ESTADO_NO_APROBADO):
+        return False, "El estado debe ser 'aprobado' o 'no aprobado'"
+
+    conn = get_db_connection2()
+    if not conn:
+        return False, 'No se pudo conectar a vacacionesgyj'
+
+    try:
+        cursor = conn.cursor()
+
+        # Verificar que la asignación exista antes de actualizar.
+        cursor.execute(
+            "SELECT 1 FROM inf_asignacion WHERE identificacion = ?",
+            (identificacion,)
+        )
+        if not cursor.fetchone():
+            return False, 'Registro de asignación no encontrado'
+
+        if estado == ESTADO_NO_APROBADO:
+            motivo = (motivo_rechazo or '').strip()
+            if not motivo:
+                return False, 'Debe ingresar un motivo para el rechazo'
+        else:
+            # Al aprobar se limpia cualquier motivo de rechazo previo.
+            motivo = None
+
+        cursor.execute("""
+            UPDATE inf_asignacion
+            SET estado_asignacion = ?,
+                motivo_rechazo = ?,
+                th_asignacion = ?,
+                fecha_update = GETDATE()
+            WHERE identificacion = ?
+        """, (estado, motivo, th_asignacion, identificacion))
+
+        conn.commit()
+        return True, 'Estado de la asignación actualizado correctamente'
+    except Exception as e:
+        print(f"Error en aprobar_rechazar_asignacion: {e}")
+        return False, str(e)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/aprobar_rechazar_asignacion', methods=['POST'])
+def handle_aprobar_rechazar_asignacion():
+    """
+    Aprueba o rechaza una asignación de vacaciones.
+
+    Cuerpo esperado (JSON):
+        {
+            "identificacion": 123456,
+            "estado": "aprobado" | "no aprobado",
+            "motivo_rechazo": "texto (obligatorio al rechazar)",
+            "th_asignacion": "Nombre del gestor de Talento Humano"
+        }
+    """
+    data = request.get_json(silent=True) or {}
+
+    identificacion = data.get('identificacion')
+    estado_recibido = str(
+        data.get('estado') or data.get('estado_asignacion') or ''
+    ).strip().lower()
+    motivo_rechazo = data.get('motivo_rechazo') or data.get('motivoRechazo') or ''
+    th_asignacion = data.get('th_asignacion')
+
+    if identificacion is None or str(identificacion).strip() == '':
+        return jsonify({'ok': False, 'error': 'La identificación es obligatoria'}), 400
+
+    try:
+        identificacion = int(float(identificacion))
+    except (TypeError, ValueError):
+        return jsonify({'ok': False, 'error': 'La identificación debe ser numérica'}), 400
+
+    # Normaliza el estado recibido (acepta también el vocabulario legado 'rechazada').
+    if estado_recibido in ('aprobado', 'aprobada'):
+        estado = ESTADO_APROBADO
+    elif estado_recibido in ('no aprobado', 'no aprobada', 'rechazado', 'rechazada'):
+        estado = ESTADO_NO_APROBADO
+    else:
+        return jsonify({'ok': False, 'error': "El estado debe ser 'aprobado' o 'no aprobado'"}), 400
+
+    ok, mensaje = aprobar_rechazar_asignacion(
+        identificacion, estado, motivo_rechazo, th_asignacion
+    )
+    if not ok:
+        status = 404 if 'no encontrado' in mensaje.lower() else 400
+        return jsonify({'ok': False, 'error': mensaje}), status
+
+    return jsonify({'ok': True, 'message': mensaje, 'estado': estado}), 200
+
 
 @app.route('/obtener_data/<string:unes>', methods=['GET'])
 def obtener_data(unes):

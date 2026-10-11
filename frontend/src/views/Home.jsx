@@ -6,7 +6,18 @@ import Swal from 'sweetalert2';
 import ApprovedEmployeesModal from '../components/ApprovedEmployeesModal';
 import RejectedEmployeesModal from '../components/RejectedEmployeesModal';
 import DownloadPlanoModal from '../components/DownloadPlanoModal';
+import { isTalentoHumanoEmail } from '../constants/talentohumano';
 import '../styles/Home.css';
+
+// Estados de asignación usados por la vista. Coinciden con lo que se persiste en
+// vacacionesgyj.dbo.inf_asignacion.estado_asignacion.
+const ESTADO_APROBADO = 'aprobado';
+const ESTADO_NO_APROBADO = 'no aprobado';
+
+// Registros históricos guardaron el rechazo como 'rechazada'/'rechazado'; se
+// reconocen también para no perder información ya almacenada.
+const esEstadoRechazado = (estado) =>
+  estado === ESTADO_NO_APROBADO || estado === 'rechazada' || estado === 'rechazado';
 
 const Home = () => {
   const { socket } = useSocket();
@@ -36,7 +47,21 @@ const Home = () => {
   useEffect(() => {
     const fetchEmployees = async () => {
       try {
-        const response = await fetch(`${API_URL}/pbi-colaborador-vacaciones?limit=1200`);
+        const email = (localStorage.getItem('userEmail') || '').toLowerCase();
+        const unes = localStorage.getItem('userUnes') || '';
+        const esTalentoHumano =
+          localStorage.getItem('isTalentoHumano') === 'true' ||
+          isTalentoHumanoEmail(email);
+
+        // Construir URL: solo se envían 'unes' + 'correo' para usuarios regulares.
+        // Con 'correo' presente el backend omite la validación de existencia y
+        // devuelve el listado (filtrado por filial cuando UNES = 106).
+        let url = `${API_URL}/pbi-colaborador-vacaciones?limit=1200`;
+        if (unes && !esTalentoHumano) {
+          url += `&unes=${encodeURIComponent(unes)}&correo=${encodeURIComponent(email)}`;
+        }
+
+        const response = await fetch(url);
         const data = await response.json();
         if (data.ok) {
           setEmployees(data.data);
@@ -110,6 +135,31 @@ const Home = () => {
     return emp?.id ?? emp?.cedula ?? emp?.email ?? emp?.IDCia_CO;
   };
 
+  // Conversión numérica segura (string numérico, null, undefined, NaN -> número)
+  const toNumber = (value) => {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  // Cálculo unificado: Resultado = Vacaciones a Corte - Días asignados
+  const calcularTotalDias = (emp, diasAsignados) => {
+    const vacacionesACorte = toNumber(emp?.dias_vacaciones_corteDic);
+    const dias = toNumber(diasAsignados);
+    const resultado = vacacionesACorte - dias;
+    return Number.isFinite(resultado) ? resultado : 0;
+  };
+
+  // Formato unificado: el Total de días siempre muestra exactamente un decimal
+  const formatearTotalDias = (value) => toNumber(value).toFixed(1);
+
+  // Valor "congelado" del Total de días para un empleado. Prioriza el cálculo ya
+  // persistido en el estado local (emp.totalDias, fijado al guardar la asignación)
+  // y solo usa el saldo del backend como respaldo. Evita recalcular al cambiar estado.
+  const obtenerTotalDiasCongelado = (emp) =>
+    (emp?.totalDias !== undefined && emp.totalDias !== null)
+      ? toNumber(emp.totalDias)
+      : toNumber(emp?.totalDiasTomados);
+
   const handleDateChange = (field, value) => {
     const updatedForm = { ...formData, [field]: value };
     
@@ -143,12 +193,15 @@ const Home = () => {
     }
 
     updatedForm.totalTomados = (Number(updatedForm.totalDias1) || 0) + (Number(updatedForm.totalDias2) || 0) + (Number(updatedForm.totalDias3) || 0);
-    updatedForm.saldoFinal = (selectedEmployee?.diasPendientes || 0) - updatedForm.totalTomados;
+    updatedForm.saldoFinal = calcularTotalDias(selectedEmployee, updatedForm.totalTomados);
 
     setFormData(updatedForm);
   };
 
   const handleSaveAsignacion = async () => {
+    // Resultado unificado = Vacaciones a Corte - Días asignados
+    const resultadoTotalDias = calcularTotalDias(selectedEmployee, formData.totalTomados);
+
     // Preparar datos para el backend
     const payload = {
       identificacion: selectedEmployee.cedula,
@@ -171,7 +224,7 @@ const Home = () => {
       periodo3_fecha2: formData.fechaFin3 || null,
       periodo3_dias3: formData.totalDias3 || 0,
       fecha_regreso: formData.fechaIngreso || null,
-      total_dias_empleado: (userDiasPendientes-formData.totalTomados).toFixed(1) || 0
+      total_dias_empleado: resultadoTotalDias.toFixed(1)
     };
 
     try {
@@ -208,7 +261,8 @@ const Home = () => {
           ? { 
               ...emp, 
               totalDiasTomados: formData.totalTomados, 
-              saldoFinal: formData.saldoFinal, 
+              totalDias: resultadoTotalDias,
+              saldoFinal: resultadoTotalDias, 
               observaciones: formData.observaciones, 
               periodos: newPeriodos,
               fechaIngreso: formData.fechaIngreso,
@@ -220,7 +274,8 @@ const Home = () => {
       setSelectedEmployee(prev => prev ? {
         ...prev,
         totalDiasTomados: formData.totalTomados,
-        saldoFinal: formData.saldoFinal,
+        totalDias: resultadoTotalDias,
+        saldoFinal: resultadoTotalDias,
         observaciones: formData.observaciones,
         periodos: newPeriodos,
         fechaIngreso: formData.fechaIngreso,
@@ -268,7 +323,7 @@ const Home = () => {
       fechaInicio3: p3.inicio || '',
       fechaFin3: p3.fin || '',
       totalDias3: p3.dias || 0,
-      totalTomados: emp.totalDiasTomados || 0,
+      totalTomados: (Number(p1.dias) || 0) + (Number(p2.dias) || 0) + (Number(p3.dias) || 0),
       saldoFinal: emp.saldoFinal || emp.diasPendientes,
       observaciones: emp.observaciones || ''
     });
@@ -276,7 +331,7 @@ const Home = () => {
   };
 
   const handleStatusChange = async (id, newStatus) => {
-    if (newStatus === 'rechazada') {
+    if (esEstadoRechazado(newStatus)) {
       initiateReject(id);
       return;
     }
@@ -285,41 +340,16 @@ const Home = () => {
     if (!emp) return;
 
     try {
-      const p1 = emp.periodos?.[0] || {};
-      const p2 = emp.periodos?.[1] || {};
-      const p3 = emp.periodos?.[2] || {};
-
-      const payload = {
-        identificacion: emp.cedula,
-        empleado: emp.Empleado,
-        cargo: emp.Cargo,
-        desc_unes: emp.DescCO,
-        unes: emp.IDCia_CO,
-        correo: emp.email,
-        estado_asignacion: newStatus,
-        dias_a_corte: emp.dias_vacaciones_corteDic,
-        observaciones: emp.observaciones || '',
-        motivo_rechazo: emp.motivoRechazo || '',
-        th_asignacion: talentoHumanoUser?.nombre || '',
-        periodo1_fecha1: p1.inicio || null,
-        periodo1_fecha2: p1.fin || null,
-        periodo1_dias1: p1.dias || 0,
-        periodo2_fecha1: p2.inicio || null,
-        periodo2_fecha2: p2.fin || null,
-        periodo2_dias2: p2.dias || 0,
-        periodo3_fecha1: p3.inicio || null,
-        periodo3_fecha2: p3.fin || null,
-        periodo3_dias3: p3.dias || 0,
-        fecha_regreso: emp.fechaIngreso || null,
-        total_dias_empleado: emp.totalDiasTomados || 0
-      };
-
-      const response = await fetch(`${API_URL}/registrar_data`, {
+      const response = await fetch(`${API_URL}/aprobar_rechazar_asignacion`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          identificacion: emp.cedula,
+          estado: newStatus,
+          th_asignacion: talentoHumanoUser?.nombre || ''
+        }),
       });
 
       if (!response.ok) {
@@ -327,8 +357,29 @@ const Home = () => {
       }
 
       setEmployees(employees.map(e => 
-        e.cedula === id ? { ...e, estado: newStatus, th_asignacion: talentoHumanoUser?.nombre } : e
+        e.cedula === id
+          ? {
+              ...e,
+              estado: newStatus,
+              motivoRechazo: '',
+              th_asignacion: talentoHumanoUser?.nombre,
+              // Congelar el Total de días para que el re-render no lo recalcule.
+              totalDias: obtenerTotalDiasCongelado(e)
+            }
+          : e
       ));
+
+      // Mantener congelado el Total de días también en el detalle del empleado.
+      setSelectedEmployee(prev => (prev && prev.cedula === id)
+        ? {
+            ...prev,
+            estado: newStatus,
+            motivoRechazo: '',
+            th_asignacion: talentoHumanoUser?.nombre,
+            totalDias: obtenerTotalDiasCongelado(prev)
+          }
+        : prev
+      );
 
       if (socket) {
         socket.emit('approve_request', { unes: emp.IDCia_CO?.toString().slice(-3) || 'N/A', nombre: emp.Empleado });
@@ -368,41 +419,17 @@ const Home = () => {
     if (!targetEmployee) return;
 
     try {
-      const p1 = targetEmployee.periodos?.[0] || {};
-      const p2 = targetEmployee.periodos?.[1] || {};
-      const p3 = targetEmployee.periodos?.[2] || {};
-
-      const payload = {
-        identificacion: targetEmployee.cedula,
-        empleado: targetEmployee.Empleado,
-        cargo: targetEmployee.Cargo,
-        desc_unes: targetEmployee.DescCO,
-        unes: targetEmployee.IDCia_CO,
-        correo: targetEmployee.email,
-        estado_asignacion: 'rechazada',
-        dias_a_corte: targetEmployee.dias_vacaciones_corteDic,
-        observaciones: targetEmployee.observaciones || '',
-        motivo_rechazo: rejectionReason,
-        th_asignacion: talentoHumanoUser?.nombre || '',
-        periodo1_fecha1: p1.inicio || null,
-        periodo1_fecha2: p1.fin || null,
-        periodo1_dias1: p1.dias || 0,
-        periodo2_fecha1: p2.inicio || null,
-        periodo2_fecha2: p2.fin || null,
-        periodo2_dias2: p2.dias || 0,
-        periodo3_fecha1: p3.inicio || null,
-        periodo3_fecha2: p3.fin || null,
-        periodo3_dias3: p3.dias || 0,
-        fecha_regreso: targetEmployee.fechaIngreso || null,
-        total_dias_empleado: targetEmployee.totalDiasTomados || 0
-      };
-
-      const response = await fetch(`${API_URL}/registrar_data`, {
+      const response = await fetch(`${API_URL}/aprobar_rechazar_asignacion`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          identificacion: targetEmployee.cedula,
+          estado: ESTADO_NO_APROBADO,
+          motivo_rechazo: rejectionReason,
+          th_asignacion: talentoHumanoUser?.nombre || ''
+        }),
       });
 
       if (!response.ok) {
@@ -410,7 +437,15 @@ const Home = () => {
       }
 
       setEmployees(employees.map(emp => 
-        emp.cedula === currentEmployeeId ? { ...emp, estado: 'rechazada', motivoRechazo: rejectionReason, th_asignacion: talentoHumanoUser?.nombre } : emp
+        emp.cedula === currentEmployeeId
+          ? {
+              ...emp,
+              estado: ESTADO_NO_APROBADO,
+              motivoRechazo: rejectionReason,
+              th_asignacion: talentoHumanoUser?.nombre,
+              totalDias: obtenerTotalDiasCongelado(emp)
+            }
+          : emp
       ));
 
       if (socket) {
@@ -459,16 +494,20 @@ const Home = () => {
           );
         })
       : filteredByUnes;
+  } else if (userUnes.toString().slice(-3) === '106') {
+    // UNES 106: el backend ya filtró por la filial del usuario logueado
+    // (cédulas de filial.json), por lo que se muestran tal cual llegan.
+    filteredEmployees = employees;
   } else {
     filteredEmployees = employees.filter(emp => emp.IDCia_CO?.toString().slice(-3) === userUnes.toString());
   }
   
   const totalEmployees = filteredEmployees.length;
-  const approvedCount = filteredEmployees.filter(emp => emp.estado === 'aprobado').length;
-  const rejectedCount = filteredEmployees.filter(emp => emp.estado === 'rechazada').length;
+  const approvedCount = filteredEmployees.filter(emp => emp.estado === ESTADO_APROBADO).length;
+  const rejectedCount = filteredEmployees.filter(emp => esEstadoRechazado(emp.estado)).length;
 
   // Verificar si todos los empleados están aprobados
-  const allApproved = filteredEmployees.length > 0 && filteredEmployees.every(emp => emp.estado === 'aprobado');
+  const allApproved = filteredEmployees.length > 0 && filteredEmployees.every(emp => emp.estado === ESTADO_APROBADO);
 
   const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
   const indexOfLastItem = currentPage * itemsPerPage;
@@ -476,8 +515,8 @@ const Home = () => {
   const currentEmployees = filteredEmployees.slice(indexOfFirstItem, indexOfLastItem);
 
   const getConfirmaFechasStyle = (estado) => {
-    if (estado === 'aprobado') return { color: '#198754', fontWeight: 'bold' };
-    if (estado === 'rechazada') return { color: '#dc3545', fontWeight: 'bold' };
+    if (estado === ESTADO_APROBADO) return { color: '#198754', fontWeight: 'bold' };
+    if (esEstadoRechazado(estado)) return { color: '#dc3545', fontWeight: 'bold' };
     return { color: '#6c757d', fontWeight: 'bold' };
   };
 
@@ -875,31 +914,36 @@ const Home = () => {
                       <td className="px-4 py-3 text-center fw-bold text-primary">{emp.dias_vacaciones_corteDic ?? '-'}</td>
                        <td className="px-4 py-3 text-center">
                          {(() => {
-                           // Calcular SALDO FINAL = dias_vacaciones_corteDic - totalDiasTomados
-                           // Priorizar datos locales cuando se han asignado fechas
-                           const diasCorte = Number(emp.dias_vacaciones_corteDic) || 0;
+                           // Columna "Total días": Resultado = Vacaciones a Corte - Días asignados.
+                           // Tras guardar la asignación el valor queda persistido en emp.totalDias.
+                           if (emp.totalDias !== undefined && emp.totalDias !== null) {
+                             const resultado = toNumber(emp.totalDias);
+                             return <span style={getTotalDiasStyle(resultado)}>{formatearTotalDias(resultado)}</span>;
+                           }
+
+                           // Fallback para empleados sin asignación guardada en esta sesión:
+                           // el backend ya entrega en totalDiasTomados el saldo (total_dias_empleado).
                            const localTomados = emp.totalDiasTomados;
                            const backendTomados = dataAsignacion?.[String(emp.cedula)]?.total_dias_empleado;
                            
-                           // Usar total local si existe y es > 0, sino usar backend
-                           const totalTomados = (localTomados !== undefined && localTomados !== null && Number(localTomados) > 0) 
-                             ? Number(localTomados) 
-                             : (backendTomados !== undefined && backendTomados !== null ? Number(backendTomados) : 0);
+                           // Usar total local si existe y es > 0, sino usar backend currentEmployees.totalDiasTomados
+                           const totalTomados = (localTomados !== undefined && localTomados !== null && toNumber(localTomados) > 0) 
+                             ? toNumber(localTomados) 
+                             : (backendTomados !== undefined && backendTomados !== null ? toNumber(backendTomados) : 0);
                            
                            // Si no se han asignado fechas (totalTomados = 0), mostrar 0.0
                            if (totalTomados === 0) {
-                             return <span style={getTotalDiasStyle(0)}>0.0</span>;
+                             return <span style={getTotalDiasStyle(0)}>{formatearTotalDias(0)}</span>;
                            }
                            
-                           const saldoFinal = diasCorte - totalTomados;
-                           const displayN = Number.isFinite(saldoFinal) ? saldoFinal.toFixed(1) : 0;
-                           return <span style={getTotalDiasStyle(saldoFinal)}>{displayN}</span>;
+                           const saldoFinal = totalTomados;
+                           return <span style={getTotalDiasStyle(saldoFinal)}>{formatearTotalDias(saldoFinal)}</span>;
                          })()}
                        </td>
                       <td className="px-4 py-3 text-center">
-                        {emp.estado === 'aprobado' ? (
+                        {emp.estado === ESTADO_APROBADO ? (
                           <FaCheckCircle className="text-success fs-4" title="Aprobado" />
-                        ) : emp.estado === 'rechazada' ? (
+                        ) : esEstadoRechazado(emp.estado) ? (
                           <FaTimesCircle className="text-danger fs-4" style={{ cursor: 'pointer' }} title="Rechazada - Ver motivo" onClick={() => handleViewRejection(emp)} />
                         ) : (
                           <FaClock className="text-warning fs-4" title="Pendiente" />
@@ -917,8 +961,8 @@ const Home = () => {
                             {isTalentoHumano && (
                               <>
                                 <Dropdown.Divider />
-                                <Dropdown.Item onClick={() => handleStatusChange(emp.cedula, 'aprobado')} className="py-2 text-success"><span className="me-2">✅</span> Aprobar</Dropdown.Item>
-                                <Dropdown.Item onClick={() => handleStatusChange(emp.cedula, 'rechazada')} className="py-2 text-danger"><span className="me-2">❌</span> Rechazar</Dropdown.Item>
+                                <Dropdown.Item onClick={() => handleStatusChange(emp.cedula, ESTADO_APROBADO)} className="py-2 text-success"><span className="me-2">✅</span> Aprobar</Dropdown.Item>
+                                <Dropdown.Item onClick={() => handleStatusChange(emp.cedula, ESTADO_NO_APROBADO)} className="py-2 text-danger"><span className="me-2">❌</span> Rechazar</Dropdown.Item>
                               </>
                             )}
                           </Dropdown.Menu>
@@ -1038,26 +1082,24 @@ const Home = () => {
                   <Col md={4}>
                     <label className="text-muted small fw-bold text-uppercase d-block mb-1">Confirma Fechas</label>
                     <p className="fw-bold fs-6" style={getConfirmaFechasStyle(selectedEmployee.estado)}>
-                      {selectedEmployee.estado === 'aprobado' ? 'Aprobado' : selectedEmployee.estado === 'rechazada' ? 'Rechazado' : 'Pendiente'}
+                      {selectedEmployee.estado === ESTADO_APROBADO ? 'Aprobado' : esEstadoRechazado(selectedEmployee.estado) ? 'Rechazado' : 'Pendiente'}
                     </p>
                   </Col>
                   <Col md={4}>
                     <label className="text-muted small fw-bold text-uppercase d-block mb-1">Aplica licencia</label>
                     {(() => {
-                      // Calcular saldo final para determinar si mostrar licencia no remunerada
-                      const diasCorte = Number(selectedEmployee.dias_vacaciones_corteDic) || 0;
-                      const localTomados = selectedEmployee.totalDiasTomados;
-                      const backendTomados = dataAsignacion?.[String(selectedEmployee.cedula)]?.total_dias_empleado;
-                      const totalTomados = (localTomados !== undefined && localTomados !== null && Number(localTomados) > 0) 
-                        ? Number(localTomados) 
-                        : (backendTomados !== undefined && backendTomados !== null ? Number(backendTomados) : 0);
-                      const saldoFinal = diasCorte - totalTomados;
-                      
-                      // Si saldo final < 3, mostrar "licencia no remunerada" en rojo
-                      if (saldoFinal < 3 && totalTomados > 0) {
+                      // "Total días tomados": mismo valor que se muestra al final del
+                      // detalle (Resultado = Vacaciones a Corte - Días asignados).
+                      const totalDiasTomados =
+                        (selectedEmployee.totalDias !== undefined && selectedEmployee.totalDias !== null)
+                          ? toNumber(selectedEmployee.totalDias)
+                          : toNumber(selectedEmployee.totalDiasTomados);
+
+                      // Si el Total días tomados es menor a -3, requiere licencia no remunerada.
+                      if (totalDiasTomados < -3) {
                         return <p className="fw-bold fs-6 text-danger">licencia no remunerada</p>;
                       }
-                      return <p className="fw-bold fs-6 text-warning">{selectedEmployee.diaNoRemunerado || 'No aplica'}</p>;
+                      return <p className="fw-bold fs-6 text-warning">No aplica</p>;
                     })()}
                   </Col>
                   <Col md={4}>
@@ -1068,7 +1110,7 @@ const Home = () => {
                         : (selectedEmployee.aprobadoPorGeovanny ? 'Aprobadas por Geovanny' : 'Pendiente de aprobación')}
                     </p>
                   </Col>
-                  {selectedEmployee.estado === 'rechazada' && (
+                  {esEstadoRechazado(selectedEmployee.estado) && (
                     <Col md={12}>
                       <label className="text-muted small fw-bold text-uppercase d-block mb-1">
                         <FaTimesCircle className="me-2 text-danger" />Motivo del Rechazo
@@ -1118,7 +1160,16 @@ const Home = () => {
                   </Row>
                   <div className="d-flex justify-content-end mt-3">
                     <span className="text-muted small fw-bold">Total días tomados: </span>
-                    <span className="fw-bold ms-2 text-success">{selectedEmployee.totalDiasTomados}</span>
+                    <span className="fw-bold ms-2 text-success">
+                      {(() => {
+                        // Mismo valor y formato (un decimal) que la columna "Total días":
+                        // Resultado = Vacaciones a Corte - Días asignados.
+                        const valor = (selectedEmployee.totalDias !== undefined && selectedEmployee.totalDias !== null)
+                          ? selectedEmployee.totalDias
+                          : selectedEmployee.totalDiasTomados;
+                        return formatearTotalDias(valor);
+                      })()}
+                    </span>
                   </div>
                 </div>
               </Col>
